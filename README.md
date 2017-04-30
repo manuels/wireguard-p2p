@@ -1,33 +1,31 @@
-WireGuard Peer-to-Peer
-======================
+# WireGuard Peer-to-Peer
 
 A tool for setting up WireGuard connections from peer to peer.
 
 It takes care of exchanging public keys, IP addresses and NAT traversal.
 
 
-Installation
-------------
+## Installation
 
-0) Install WireGuard: See WireGuard's [installation page](https://www.wireguard.io/install/)
+### 0) Install WireGuard
+See WireGuard's [installation page](https://www.wireguard.io/install/)
 
-1) Install [BulletinBoard DHT](https://github.com/manuels/bulletinboard-dht/)
+### 1) Install [BulletinBoard DHT](https://github.com/manuels/bulletinboard-dht/)
 
 ```bash
     wget 'https://github.com/manuels/bulletinboard-dht/releases/download/v0.5.0/bulletinboard_0.5.0_amd64.deb'
     sudo dpkg -i bulletinboard_0.5.0_amd64.deb
 ```
 
-2) Install wg-p2p
+### 2) Install wg-p2p
 
 ```bash
     pip install wireguard-p2p
 ```
 
-Exchange Public Keys
---------------------
+## Exchange Public Keys
 
-0) Create new config file (optional)
+### 0) Create new config file (optional)
 
 Alice creates a new WireGuard [configuration file](https://git.zx2c4.com/WireGuard/about/src/tools/wg.8) on her computer named `bob`. (Bob does the same on his machine.)
 
@@ -42,7 +40,7 @@ Address = 10.0.100.2/24
 ```
 
 
-1) Publish Public Keys
+### 1) Publish Public Keys
 
 Alice publishes her public key, so Bob can find it. 
 
@@ -53,7 +51,7 @@ Published public key LLgKTG7VaTZKzikIRR0oRkyZw1IKNPIXGt0RYJV2OWA= as "alice".
 ```
 
 
-2) Retrieve Bob's Public Key
+### 2) Retrieve Bob's Public Key
 
 Alice adds Bob's public key to her configuration file. (Bob does the same on his machine.)
 
@@ -64,8 +62,7 @@ Would you like to add the peer with public key EKJDRxMeLswhIpaCy6xnYLD1ZaHMNvi5S
 ```
 
 
-Update Bob's IP and Port and traverse NAT
---------------------------------------------
+## Update Bob's IP and Port and traverse NAT
 
 Alice and Bob can determine their current IP address and setup NAT traversal (using STUN) and publish it.
 

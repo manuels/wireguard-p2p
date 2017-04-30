@@ -39,6 +39,6 @@ def main(args):
 
 
 if __name__ == '__main__':
-    args = docopt(__doc__, version='WireGuard Peer-to-Peer 0.1.0')
+    args = docopt(__doc__, version='WireGuard Peer-to-Peer 0.1.1')
     main(args)
 
