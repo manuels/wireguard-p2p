@@ -1,3 +1,7 @@
+## [0.1.3] - 2017-04-30
+### Fixed
+- Publication of endpoints
+
 ## [0.1.2] - 2017-04-30
 ### Fixed
 - python import statements

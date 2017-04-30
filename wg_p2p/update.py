@@ -61,11 +61,12 @@ def to_peer_index(public_key_list, peer):
 def update_own_ip(private_key, public_key_list, src_port, lifetime):
     nat_type, public_ip, public_port = nat.get_ip_info(source_port=src_port)
     debug('Own public address: {}:{}, NAT type: {}'.format(public_ip, public_port, nat_type))
+    local_public_key = config.get_local_public_key(private_key)
 
     for public_key in public_key_list:
         value = encode_socket_addr(nat_type, public_ip, public_port)
         enc_value = encrypt(private_key, public_key, value)
-        dht.set_endpoint(private_key, public_key, enc_value, lifetime)
+        dht.set_endpoint(local_public_key, public_key, enc_value, lifetime)
 
     return nat_type
 
@@ -73,7 +74,6 @@ def update_own_ip(private_key, public_key_list, src_port, lifetime):
 def update_main(conf, args):
     lifetime = int(args['--time'])*60
     private_key = config.get_local_private_key(conf)
-    private_key = b64decode(private_key)
     src_port = config.get_local_port(conf)
     public_key_list = config.get_remote_public_keys(conf)
 
@@ -90,10 +90,11 @@ def update_main(conf, args):
     print(conf)
 
 
-def update_peer(conf, local_nat_type, private_key, public_key):
-    value_list = dht.get_endpoint(private_key, public_key)
+def update_peer(conf, local_nat_type, private_key, remote_public_key):
+    local_public_key = config.get_local_public_key(private_key)
+    value_list = dht.get_endpoint(local_public_key, remote_public_key)
 
-    pub_key = nacl.public.PublicKey(public_key)
+    pub_key = nacl.public.PublicKey(remote_public_key)
     private_key = nacl.public.PrivateKey(private_key)
     box = nacl.public.Box(private_key, pub_key)
 
@@ -118,7 +119,7 @@ def update_peer(conf, local_nat_type, private_key, public_key):
             candidate = (t, ip, port, remote_nat_type)
 
     if candidate is None:
-        info('Peer {} not found!', public_key)
+        info('Peer {} not found!', b64encode(remote_public_key).decode('ascii'))
     else:
         remote_nat_type = nat_type_list[remote_nat_type[0]]
 
@@ -128,7 +129,7 @@ def update_peer(conf, local_nat_type, private_key, public_key):
            nat_type_list.index(local_nat_type) > nat_type_list.index('Full Cone'):
             info('!!! Connection will probably fail due to NAT type combination !!!')
 
-        conf = config.update_endpoint(conf, public_key, (ip, port))
+        conf = config.update_endpoint(conf, remote_public_key, (ip, port))
 
     return conf
 

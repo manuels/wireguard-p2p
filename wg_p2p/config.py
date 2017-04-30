@@ -29,7 +29,7 @@ def parse_config(conf):
 def get_local_private_key(conf):
     config = parse_config(conf)
     private_key = config['Interface']['PrivateKey']
-    return private_key
+    return b64decode(private_key)
 
 
 def get_local_port(conf):
@@ -40,7 +40,7 @@ def get_local_port(conf):
 
 def get_local_public_key(private_key):
     res = subprocess.run(['wg', 'pubkey'],
-                         input=private_key.encode('ascii'),
+                         input=b64encode(private_key),
                          stdout=subprocess.PIPE,
                          check=True)
     public_key = res.stdout.decode('ascii').strip()

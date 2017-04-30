@@ -10,7 +10,7 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
 setup(
     name='wireguard-p2p',
 
-    version='0.1.1',
+    version='0.1.3',
 
     description='A tool for setting up WireGuard connections from peer to peer.',
     long_description=long_description,
