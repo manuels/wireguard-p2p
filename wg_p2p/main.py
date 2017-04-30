@@ -16,14 +16,16 @@ Options:
 '''
 from docopt import docopt
 
-from new import new
-from publish import publish
-from add_peer import add_peers
-from update import update_main
+from wg_p2p.new import new
+from wg_p2p.publish import publish
+from wg_p2p.add_peer import add_peers
+from wg_p2p.update import update_main
 
-import config
+import wg_p2p.config
 
-def main(args):
+def main():
+    args = docopt(__doc__, version='WireGuard Peer-to-Peer 0.1.1')
+
     if args['new']:
         new(args)
         return
@@ -39,6 +41,5 @@ def main(args):
 
 
 if __name__ == '__main__':
-    args = docopt(__doc__, version='WireGuard Peer-to-Peer 0.1.1')
-    main(args)
+    main()
 

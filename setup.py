@@ -44,7 +44,7 @@ setup(
 
     entry_points={
         'console_scripts': [
-            'wg-p2p=main:main',
+            'wg-p2p=wg_p2p.main:main',
         ],
     },
 )

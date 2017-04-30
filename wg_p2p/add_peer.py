@@ -2,9 +2,9 @@ import os
 import sys
 from base64 import b64encode, b64decode
 
-import dht
-import config
-from log import info
+import wg_p2p.dht
+import wg_p2p.config
+from wg_p2p.log import info
 
 def add_peers(conf, args):
     for name in args['<name>']:

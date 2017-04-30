@@ -5,7 +5,7 @@ import configparser
 
 from base64 import b64encode, b64decode
 
-from utils import ip_addr_to_str
+from wg_p2p.utils import ip_addr_to_str
 
 def read_config(path, conn):
     fname = os.path.basename(conn + '.conf')

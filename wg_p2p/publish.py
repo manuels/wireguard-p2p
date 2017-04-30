@@ -2,9 +2,9 @@ import os
 import sys
 import base64
 
-import dht
-import config
-from log import info
+import wg_p2p.dht
+import wg_p2p.config
+from wg_p2p.log import info
 
 def publish(conf, args):
     name = args['<name>'][0]

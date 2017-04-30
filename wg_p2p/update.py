@@ -8,11 +8,11 @@ from base64 import b64encode, b64decode
 
 import nacl.public
 
-from log import info, debug
+from wg_p2p.log import info, debug
 
-import dht
-import nat
-import config
+import wg_p2p.dht
+import wg_p2p.nat
+import wg_p2p.config
 
 nat_type_list = ['Open Internet', 'Full Cone', 'Symmetric UDP Firewall', 'Restricted Cone',
                  'Port Restricted Cone', 'Symmetric', 'Blocked']
