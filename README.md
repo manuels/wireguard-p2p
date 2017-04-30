@@ -3,9 +3,13 @@ WireGuard Peer-to-Peer
 
 A tool for setting up WireGuard connections from peer to peer.
 
+It takes care of exchanging public keys, IP addresses and NAT traversal.
+
 
 Installation
 ------------
+
+0) Install WireGuard: See WireGuard's [installation page](https://www.wireguard.io/install/)
 
 1) Install [BulletinBoard DHT](https://github.com/manuels/bulletinboard-dht/)
 
@@ -23,23 +27,35 @@ Installation
 Exchange Public Keys
 --------------------
 
-1) Publish Alice's Public Key
+0) Create new config file (optional)
+
+Alice creates a new WireGuard [configuration file](https://git.zx2c4.com/WireGuard/about/src/tools/wg.8) on her computer named `bob`. (Bob does the same on his machine.)
 
 ```bash
+alice$ wg-p2p bob new | sudo tee /etc/wireguard/bob.conf >/dev/null
+
 alice$ sudo cat /etc/wireguard/bob.conf
 [Interface]
 ListenPort = 51800
 PrivateKey = p504swpAoXHitQOOPHfPmt4qqY5ik5xkUrMnAZTr4X8=
 Address = 10.0.100.2/24
+```
 
+
+1) Publish Public Keys
+
+Alice publishes her public key, so Bob can find it. 
+
+```bash
 alice$ wg-p2p bob publish alice
-[sudo] password for alice:
+[sudo] password for alice: # to read /etc/wireguard/bob.conf
 Published public key LLgKTG7VaTZKzikIRR0oRkyZw1IKNPIXGt0RYJV2OWA= as "alice".
 ```
 
-(Bob does the same on his machine.)
 
 2) Retrieve Bob's Public Key
+
+Alice adds Bob's public key to her configuration file. (Bob does the same on his machine.)
 
 ```bash
 alice$ wg-p2p bob add-peer bob | sudo tee /etc/wireguard/bob.conf >/dev/null
@@ -47,10 +63,17 @@ alice$ wg-p2p bob add-peer bob | sudo tee /etc/wireguard/bob.conf >/dev/null
 Would you like to add the peer with public key EKJDRxMeLswhIpaCy6xnYLD1ZaHMNvi5SuT10L8w1m8=? [Y/n]
 ```
 
-Update Bob's IP and Port
-------------------------
+
+Update Bob's IP and Port and traverse NAT
+--------------------------------------------
+
+Alice and Bob can determine their current IP address and setup NAT traversal (using STUN) and publish it.
+
+This has to be done initially and from time to time when both IP addresses change or the NAT traversal expired.
 
 ```bash
+alice$ wg-quick down bob
+
 alice$ wg-p2p bob update | sudo tee /etc/wireguard/bob.conf >/dev/null
 Own public address: 38.12.81.2:21280, NAT type: Full Cone
 Local NAT:  Full Cone

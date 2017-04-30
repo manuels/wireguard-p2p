@@ -58,25 +58,26 @@ def to_peer_index(public_key_list, peer):
         raise ValueError(msg)
 
 
-def update_own_ip(private_key, public_key_list, src_port):
+def update_own_ip(private_key, public_key_list, src_port, lifetime):
     nat_type, public_ip, public_port = nat.get_ip_info(source_port=src_port)
     debug('Own public address: {}:{}, NAT type: {}'.format(public_ip, public_port, nat_type))
 
     for public_key in public_key_list:
         value = encode_socket_addr(nat_type, public_ip, public_port)
         enc_value = encrypt(private_key, public_key, value)
-        dht.set_endpoint(private_key, public_key, enc_value)
+        dht.set_endpoint(private_key, public_key, enc_value, lifetime)
 
     return nat_type
 
 
 def update_main(conf, args):
+    lifetime = int(args['--time'])*60
     private_key = config.get_local_private_key(conf)
     private_key = b64decode(private_key)
     src_port = config.get_local_port(conf)
     public_key_list = config.get_remote_public_keys(conf)
 
-    nat_type = update_own_ip(private_key, public_key_list, src_port)
+    nat_type = update_own_ip(private_key, public_key_list, src_port, lifetime)
 
     if len(args['<peer#>']) == 0:
         peer_list = range(len(public_key_list))

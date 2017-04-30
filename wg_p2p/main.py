@@ -2,6 +2,7 @@
 WireGuard Peer-to-Peer.
 
 Usage:
+  wg-p2p <conn> new [options]
   wg-p2p <conn> publish [options] <name>
   wg-p2p <conn> add-peer [options] <name>...
   wg-p2p <conn> update [options] [<peer#>]...
@@ -15,6 +16,7 @@ Options:
 '''
 from docopt import docopt
 
+from new import new
 from publish import publish
 from add_peer import add_peers
 from update import update_main
@@ -22,6 +24,10 @@ from update import update_main
 import config
 
 def main(args):
+    if args['new']:
+        new(args)
+        return
+
     conf = config.read_config(args['--conf'], args['<conn>'])
 
     if args['publish']:

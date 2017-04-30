@@ -25,9 +25,9 @@ def set_public_key(name, public_key, lifetime):
     iface.Store('wgp2p', name.encode('ascii'), public_key, lifetime)
 
 
-def set_endpoint(private_key, public_key, enc_value):
+def set_endpoint(private_key, public_key, enc_value, lifetime):
     bus = dbus.SessionBus()
     proxy = bus.get_object('org.manuel.BulletinBoard', '/')
     iface = dbus.Interface(proxy, 'org.manuel.BulletinBoard')
-    iface.Put('wgp2p', b''.join([private_key, public_key]), enc_value)
+    iface.Store('wgp2p', b''.join([private_key, public_key]), enc_value, lifetime)
 

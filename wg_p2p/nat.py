@@ -279,7 +279,7 @@ def get_nat_type(s, source_ip, source_port, stun_host=None, stun_port=3478):
     return typ, ret
 
 
-def get_ip_info(source_ip="0.0.0.0", source_port=54320, stun_host=None,
+def get_ip_info(source_ip='0.0.0.0', source_port=54320, stun_host=None,
                 stun_port=3478):
     socket.setdefaulttimeout(1)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
