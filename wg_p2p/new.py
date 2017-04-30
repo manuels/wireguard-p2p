@@ -17,7 +17,6 @@ def new(args):
         'ListenPort': 50000 + random.randint(0, 10000),
         'PrivateKey': private_key,
         'Address': '10.0.0.{}/24'.format(random.randint(0, 255)),
-        'PersistentKeepalive': 'True',
     }
 
     out = io.StringIO()

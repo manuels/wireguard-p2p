@@ -69,6 +69,7 @@ def add_peer(conf, public_key):
         config['Peer'] = {
             'PublicKey': public_key,
             'AllowedIPs': '10.0.0.0/24',
+            'PersistentKeepalive': 60,
         }
 
         section = io.StringIO('\n')
