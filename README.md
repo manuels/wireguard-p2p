@@ -4,6 +4,8 @@ A tool for setting up WireGuard connections from peer to peer.
 
 It takes care of exchanging public keys, IP addresses and NAT traversal.
 
+**!!! This tool has ALPHA quality. Prepare for the worst and backup /etc/wireguard !!!**
+
 
 ## Installation
 
@@ -57,7 +59,7 @@ Alice adds Bob's public key to her configuration file. (Bob does the same on his
 
 ```bash
 alice$ wg-p2p bob add-peer bob | sudo tee /etc/wireguard/bob.conf >/dev/null
-1 peer(s) found named "alice".
+1 peer(s) found named "bob".
 Would you like to add the peer with public key EKJDRxMeLswhIpaCy6xnYLD1ZaHMNvi5SuT10L8w1m8=? [Y/n]
 ```
 
@@ -71,7 +73,7 @@ This has to be done initially and from time to time when both IP addresses chang
 ```bash
 alice$ wg-quick down bob
 
-alice$ wg-p2p bob update | sudo tee /etc/wireguard/bob.conf >/dev/null
+alice$ wg-p2p bob update | sudo tee /etc/wireguard/bob.conf
 Own public address: 38.12.81.2:21280, NAT type: Full Cone
 Local NAT:  Full Cone
 Remote NAT: Full Cone
