@@ -21,10 +21,10 @@ from wg_p2p.publish import publish
 from wg_p2p.add_peer import add_peers
 from wg_p2p.update import update_main
 
-import wg_p2p.config
+import wg_p2p.config as config
 
 def main():
-    args = docopt(__doc__, version='WireGuard Peer-to-Peer 0.1.1')
+    args = docopt(__doc__, version='WireGuard Peer-to-Peer 0.1.2')
 
     if args['new']:
         new(args)

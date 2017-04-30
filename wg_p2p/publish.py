@@ -2,8 +2,8 @@ import os
 import sys
 import base64
 
-import wg_p2p.dht
-import wg_p2p.config
+import wg_p2p.dht as dht
+import wg_p2p.config as config
 from wg_p2p.log import info
 
 def publish(conf, args):

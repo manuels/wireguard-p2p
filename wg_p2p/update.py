@@ -10,9 +10,9 @@ import nacl.public
 
 from wg_p2p.log import info, debug
 
-import wg_p2p.dht
-import wg_p2p.nat
-import wg_p2p.config
+import wg_p2p.dht as dht
+import wg_p2p.nat as nat
+import wg_p2p.config as config
 
 nat_type_list = ['Open Internet', 'Full Cone', 'Symmetric UDP Firewall', 'Restricted Cone',
                  'Port Restricted Cone', 'Symmetric', 'Blocked']
