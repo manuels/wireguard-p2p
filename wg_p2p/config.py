@@ -32,6 +32,22 @@ def get_local_private_key(conf):
     return b64decode(private_key)
 
 
+def get_endpoint(conf, j):
+    for i, section in enumerate(conf.split('[Peer]')):
+        if i == 0:
+            continue
+
+        config = parse_config('[Peer]' + section)
+
+        if i - 1 == j:
+            endpoint = config['Peer']['Endpoint']
+            endpoint = endpoint.split(':')
+            addr = ':'.join(endpoint[:-1])
+            port = int(endpoint[-1])
+            return addr, port
+    return None
+
+
 def get_local_port(conf):
     config = parse_config(conf)
     port = config['Interface']['ListenPort']

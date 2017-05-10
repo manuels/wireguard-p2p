@@ -90,8 +90,7 @@ def update_main(conf, args):
     print(conf)
 
 
-def update_peer(conf, local_nat_type, private_key, remote_public_key):
-    local_public_key = config.get_local_public_key(private_key)
+def get_endpoint(private_key, local_public_key, remote_public_key):
     value_list = dht.get_endpoint(local_public_key, remote_public_key)
 
     pub_key = nacl.public.PublicKey(remote_public_key)
@@ -119,8 +118,19 @@ def update_peer(conf, local_nat_type, private_key, remote_public_key):
             candidate = (t, ip, port, remote_nat_type)
 
     if candidate is None:
+        return None
+    else:
+        return candidate[1:]
+
+
+def update_peer(conf, local_nat_type, private_key, remote_public_key):
+    local_public_key = config.get_local_public_key(private_key)
+    candidate = get_endpoint(private_key, local_public_key, remote_public_key)
+
+    if candidate is None:
         info('Peer {} not found!', b64encode(remote_public_key).decode('ascii'))
     else:
+        ip, port, remote_nat_type = candidate
         remote_nat_type = nat_type_list[remote_nat_type[0]]
 
         info('Local NAT:  {}', local_nat_type)

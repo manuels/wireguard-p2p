@@ -1,3 +1,7 @@
+## ------- [0.1.4] - 2017-04-30
+### Fixed
+- Keep alive
+
 ## [0.1.3] - 2017-04-30
 ### Fixed
 - Publication of endpoints

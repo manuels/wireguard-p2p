@@ -16,7 +16,7 @@ def new(args):
     config['Interface'] = {
         'ListenPort': 50000 + random.randint(0, 10000),
         'PrivateKey': private_key,
-        'Address': '10.0.0.{}/24'.format(random.randint(0, 255)),
+        'Address': '10.0.0.{}'.format(random.randint(0, 255)),
     }
 
     out = io.StringIO()

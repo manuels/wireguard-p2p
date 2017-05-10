@@ -143,7 +143,7 @@ def stun_test(sock, host, port, source_ip, source_port, send_data=""):
                     retVal['Resp'] = False
                     return retVal
         msgtype = binascii.b2a_hex(buf[0:2]).decode('ascii')
-        bind_resp_msg = dictValToMsgType[msgtype] == "BindResponseMsg"
+        bind_resp_msg = dictValToMsgType.get(msgtype) == "BindResponseMsg"
         tranid_match = tranid.upper() == binascii.b2a_hex(buf[4:20]).upper().decode('ascii')
         if bind_resp_msg and tranid_match:
             recvCorr = True
@@ -218,8 +218,12 @@ def stun_test(sock, host, port, source_ip, source_port, send_data=""):
     return retVal
 
 
-def get_nat_type(s, source_ip, source_port, stun_host=None, stun_port=3478):
+def get_nat_type(s, source_ip, source_port, stun_host=None, stun_port=3478, stun_servers=None):
     _initialize()
+
+    if stun_servers is None:
+        stun_servers = stun_servers_list
+
     port = stun_port
     log.debug(colored('# Do Test1', 'green'))
     resp = False
@@ -227,7 +231,7 @@ def get_nat_type(s, source_ip, source_port, stun_host=None, stun_port=3478):
         ret = stun_test(s, stun_host, port, source_ip, source_port)
         resp = ret['Resp']
     else:
-        for stun_host in stun_servers_list:
+        for stun_host in stun_servers:
             log.debug('trying STUN host: %s', stun_host)
             ret = stun_test(s, stun_host, port, source_ip, source_port)
             resp = ret['Resp']
@@ -280,13 +284,14 @@ def get_nat_type(s, source_ip, source_port, stun_host=None, stun_port=3478):
 
 
 def get_ip_info(source_ip='0.0.0.0', source_port=54320, stun_host=None,
-                stun_port=3478):
+                stun_port=3478, stun_servers=None):
     socket.setdefaulttimeout(1)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     # s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((source_ip, source_port))
     nat_type, nat = get_nat_type(s, source_ip, source_port,
-                                 stun_host=stun_host, stun_port=stun_port)
+                                 stun_host=stun_host, stun_port=stun_port,
+                                 stun_servers=stun_servers)
     external_ip = nat['ExternalIP']
     external_port = nat['ExternalPort']
     s.close()

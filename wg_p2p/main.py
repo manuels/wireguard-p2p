@@ -6,6 +6,7 @@ Usage:
   wg-p2p <conn> publish [options] <name>
   wg-p2p <conn> add-peer [options] <name>...
   wg-p2p <conn> update [options] [<peer#>]...
+  wg-p2p <conn> daemon [<peer#>]
 
 Options:
   --conf=<path>        Location of WireGuard config files [default: /etc/wireguard].
@@ -20,6 +21,7 @@ from wg_p2p.new import new
 from wg_p2p.publish import publish
 from wg_p2p.add_peer import add_peers
 from wg_p2p.update import update_main
+from wg_p2p.daemon import daemon
 
 import wg_p2p.config as config
 
@@ -30,7 +32,8 @@ def main():
         new(args)
         return
 
-    conf = config.read_config(args['--conf'], args['<conn>'])
+    conn = args['<conn>']
+    conf = config.read_config(args['--conf'], conn)
 
     if args['publish']:
         publish(conf, args)
@@ -38,6 +41,8 @@ def main():
         add_peers(conf, args)
     elif args['update']:
         update_main(conf, args)
+    elif args['daemon']:
+        daemon(conn, conf, args)
 
 
 if __name__ == '__main__':
