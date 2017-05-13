@@ -7,6 +7,12 @@ It takes care of exchanging public keys, IP addresses and NAT traversal.
 **!!! This tool has ALPHA quality. Prepare for the worst and backup /etc/wireguard !!!**
 
 
+## Features
+
+- Exchange Public Keys
+- NAT-traversal and IP address exchange
+
+
 ## Installation
 
 ### 0) Install WireGuard
@@ -64,7 +70,19 @@ Would you like to add the peer with public key EKJDRxMeLswhIpaCy6xnYLD1ZaHMNvi5S
 ```
 
 
-## Update Bob's IP and Port and traverse NAT
+## Exchange IP and Port with Bob and traverse NAT (daemon mode)
+
+The daemon mode periodically looks up Bob's latest IP address and takes care about NAT traversal automatically.
+
+Just start the daemon on Alice's and Bob's computer like this:
+
+```bash
+alice$ wg-quick up bob
+alice$ wg-p2p bob daemon 1
+```
+
+
+## Update Bob's IP and Port and traverse NAT (manually)
 
 Alice and Bob can determine their current IP address and setup NAT traversal (using STUN) and publish it.
 
