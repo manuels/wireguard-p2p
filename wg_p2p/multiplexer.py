@@ -62,5 +62,8 @@ class Multiplexer(object):
             else:
                 dst = self.intern_sock_to_extern_host[insock]
                 #print('{}:{} => {}:{} => {}:{}'.format(*src, *self.proxy_sock.getsockname(), *dst))
-                self.proxy_sock.sendto(data, dst)
+                try:
+                    self.proxy_sock.sendto(data, dst)
+                except OSError:
+                    pass
 
