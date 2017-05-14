@@ -21,8 +21,8 @@ See WireGuard's [installation page](https://www.wireguard.io/install/)
 ### 1) Install [BulletinBoard DHT](https://github.com/manuels/bulletinboard-dht/)
 
 ```bash
-    wget 'https://github.com/manuels/bulletinboard-dht/releases/download/v0.5.0/bulletinboard_0.5.0_amd64.deb'
-    sudo dpkg -i bulletinboard_0.5.0_amd64.deb
+    wget 'https://github.com/manuels/bulletinboard-dht/releases/download/v0.5.3/bulletinboard_0.5.3_amd64.deb'
+    sudo dpkg -i bulletinboard_0.5.3_amd64.deb
 ```
 
 ### 2) Install wg-p2p
