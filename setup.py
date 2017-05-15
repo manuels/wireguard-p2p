@@ -42,6 +42,9 @@ setup(
 
     install_requires=['docopt', 'PyNaCl', 'termcolor'],
 
+    data_files=[('/etc', ['etc/wireguard-p2p.conf']),
+                ('/etc/init.d', ['etc/init.d/wireguard-p2p'])],
+
     entry_points={
         'console_scripts': [
             'wg-p2p=wg_p2p.main:main',

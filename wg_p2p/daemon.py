@@ -23,6 +23,15 @@ def fork(f):
     return wrapper
 
 
+def get_current_endpoint(conn, public_key):
+    cmd = ['sudo', 'wg', 'show', conn, 'endpoints']
+    res = subprocess.run(cmd, check=True)
+    for line in res.stdout.split('\n'):
+        if line.startswith(public_key):
+            return line.split('\t')[1]
+    return None
+
+
 @fork
 def fork_dht_lookup(conn, multiplexer, private_key, local_public_key, remote_public_key):
     while True:
@@ -36,11 +45,14 @@ def fork_dht_lookup(conn, multiplexer, private_key, local_public_key, remote_pub
         ep_ip, ep_port, ep_nat_type = endpoint
         mplexed_addr = multiplexer.register((str(ep_ip), ep_port))
 
-        mplexed = '{}:{}'.format(*mplexed_addr)
         peer = base64.b64encode(remote_public_key)
-        cmd = ['sudo', 'wg', 'set', conn, 'peer', peer, 'endpoint', mplexed]
-        print(cmd)
-        subprocess.run(cmd, check=True)
+        mplexed = '{}:{}'.format(*mplexed_addr)
+
+        curr_endpoint = get_current_endpoint(conn, remote_public_key)
+        if curr_endpoint != mplexed:
+            cmd = ['sudo', 'wg', 'set', conn, 'peer', peer, 'endpoint', mplexed]
+            print(cmd)
+            subprocess.run(cmd, check=True)
 
         print('Endpoint {}:{} ({}) found in DHT.'.format(*endpoint[:2], mplexed))
         time.sleep(60)

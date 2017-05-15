@@ -42,4 +42,6 @@ def set_endpoint(local_public_key, remote_public_key, enc_value, lifetime):
         iface.Store('wgp2p', b''.join([local_public_key, remote_public_key]), enc_value, lifetime)
     except dbus.exceptions.DBusException:
         pass
+    except ValueError:
+        pass
 

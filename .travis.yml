@@ -1,0 +1,49 @@
+language: python
+python:
+  - "3.5"
+
+env:
+  global:
+    - PACKAGE_NAME=wireguard-p2p
+
+install:
+  - pip install -r requirements.txt
+
+script:
+  - echo $TRAVIS_TAG
+
+before_deploy:
+  - local src=$(pwd)
+  - sudo apt-get install -y ruby-dev build-essential rpm
+  - git clone https://github.com/rbenv/rbenv.git ~/.rbenv
+  - cd ~/.rbenv && src/configure && make -C src
+  - export PATH="$HOME/.rbenv/bin:$PATH"
+  - eval "$(rbenv init -)"
+  - ~/.rbenv/bin/rbenv rehash
+  - gem install --no-ri --no-rdoc ffi
+  - gem install --no-ri --no-rdoc fpm
+  - cd $TRAVIS_BUILD_DIR
+  - ls -l
+  - echo $PACKAGE_NAME $TRAVIS_TAG
+  - fpm -s python -t deb -n $PACKAGE_NAME -v `echo $TRAVIS_TAG | tr -d v`
+      --depends python3-nacl
+      --python-package-name-prefix python3
+      --python-disable-dependency pynacl
+      --config-files etc/wireguard-p2p.conf
+      --deb-init etc/init.d/wireguard-p2p
+      --after-upgrade after-update.sh ./setup.py
+
+deploy:
+  api_key:
+    secure: VCIi81D2jzlmxi6CvSMNZPAIBRTT5YCB6/ympYS2il2JUmleBD8i8J2mWxPPGtLzW3S5WpFgtXgjRh9YtTw8ByxeK+3CEXsTxg41q7TabjRnlr3Hc6osm5qzgYIPlLyjXdjQrCDIFyj3tcLXhiquApbzmEqTsnPc1guf0TQzJvZU6fRbdx2dOEi9cgMlBS6jgIqaEHuX+akEmUDboBDSECi8K4BKwaiTQG0094IAWZU5Der7K7oSe2GUpagp2voFxmkSHIkQJdFinWRUziwyqrs2VwnKtAKA2AAwDwK1tDmUgbEBDoGvXIr9hPJlk/50YPzdjAbIR2pHCB/22NxLP5ziuRexFsNmqH+YdV6rS06tnX/6PFLSjiksT/c2AhRGiyZqOw0Dl6gI/vqJ3SktA9oa6qDpw9GY6BHzlPGRd5i+h7BiEWJDC7iUMRVKe1OAcHdgKyag6iafmGUfQqhmOx3F0ZKVSPtgozB9bQ2FayUVG71QAFN9E9jxlDzDvvOJacU00onGjxVjKY9iwrTw4fM++lx1gqu4eWbCbwST/3Qwy7Vr3q7Dx97WOPJY/yfNpu3z4qZ/HPotglvy+BkqO1bvTS8CsDjWUdkiQ/PWEU/p80itEXVqL/zOnsrn+zr4DPfw1wYgtKD7pi+eeoqUOoCJLB8L6mpUyU5rGSEvvWk=
+  on:
+    tags: true
+  file_glob: true
+  file: $PACKAGE_NAME*.deb
+  provider: releases
+  skip_cleanup: true
+
+notifications:
+  email:
+    on_success: never
+    on_failure: change

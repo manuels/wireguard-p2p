@@ -1,5 +1,7 @@
 # WireGuard Peer-to-Peer
 
+[![Build Status](https://travis-ci.org/manuels/wireguard-p2p.svg?branch=master)](https://travis-ci.org/manuels/wireguard-p2p)
+
 A tool for setting up WireGuard connections from peer to peer.
 
 It takes care of exchanging public keys, IP addresses and NAT traversal.
