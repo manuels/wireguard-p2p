@@ -6,6 +6,7 @@ import ipaddress
 import selectors
 import subprocess
 import collections
+import configparser
 import multiprocessing as mp
 import multiprocessing.managers
 
@@ -20,13 +21,17 @@ def fork(f):
     def wrapper(*args, **kwds):
         p = mp.Process(target=f, args=args)
         p.start()
+        return p
     return wrapper
 
 
 def get_current_endpoint(conn, public_key):
+    public_key = base64.b64encode(public_key).decode('ascii')
+
     cmd = ['sudo', 'wg', 'show', conn, 'endpoints']
-    res = subprocess.run(cmd, check=True)
-    for line in res.stdout.split('\n'):
+    res = subprocess.run(cmd, check=True, stdout=subprocess.PIPE)
+
+    for line in res.stdout.decode('ascii').split('\n'):
         if line.startswith(public_key):
             return line.split('\t')[1]
     return None
@@ -45,11 +50,11 @@ def fork_dht_lookup(conn, multiplexer, private_key, local_public_key, remote_pub
         ep_ip, ep_port, ep_nat_type = endpoint
         mplexed_addr = multiplexer.register((str(ep_ip), ep_port))
 
-        peer = base64.b64encode(remote_public_key)
+        peer = base64.b64encode(remote_public_key).decode('ascii')
         mplexed = '{}:{}'.format(*mplexed_addr)
 
         curr_endpoint = get_current_endpoint(conn, remote_public_key)
-        if curr_endpoint != mplexed:
+        if curr_endpoint is not None and curr_endpoint != mplexed:
             cmd = ['sudo', 'wg', 'set', conn, 'peer', peer, 'endpoint', mplexed]
             print(cmd)
             subprocess.run(cmd, check=True)
@@ -80,7 +85,7 @@ def fork_nat_traversal(private_key, local_public_key, remote_public_key, stun_se
         external_ip = res['ExternalIP']
         external_port = res['ExternalPort']
 
-        print('Publishing own address: {}:{}.'.format(external_ip, external_port))
+        print('Publishing own address: {}:{} (127.0.0.1:{}).'.format(external_ip, external_port, nat_port))
         value = update.encode_socket_addr(nat_type, external_ip, external_port)
         enc_value = update.encrypt(private_key, remote_public_key, value)
         dht.set_endpoint(local_public_key, remote_public_key, enc_value, 5*60)
@@ -91,10 +96,32 @@ def fork_nat_traversal(private_key, local_public_key, remote_public_key, stun_se
 class MyManager(mp.managers.BaseManager):
     pass
 
-def daemon(conn, conf, args):
+def daemon_main(args):
+    cfg = configparser.ConfigParser()
+    cfg.read('/etc/wireguard-p2p.conf')
+
+    processes = []
+
+    for conn in cfg.sections():
+        conf = config.read_config(args['--conf'], conn)
+
+        if cfg[conn]['Peers'] == 'all':
+            peers = config.get_remote_public_keys(conf)
+        else:
+            peers = cfg[conn]['Peers']
+
+        for i, p in enumerate(peers):
+            processes.append(daemon(conn, conf, p, i))
+
+    for p in processes:
+        p.join()
+
+
+@fork
+def daemon(conn, conf, remote_public_key, i):
     wg_port = config.get_local_port(conf)
-    proxy_port = wg_port + 1
-    nat_port = wg_port + 2
+    proxy_port = wg_port + 2*i + 1
+    nat_port = wg_port + 2*i + 2
 
     private_key = config.get_local_private_key(conf)
     local_public_key = config.get_local_public_key(private_key)
@@ -105,8 +132,7 @@ def daemon(conn, conf, args):
     mgr.start()
     multiplexer = mgr.Multiplexer(proxy_port, [wg_port, nat_port])
 
-    i = update.to_peer_index(public_key_list, args['<peer#>'][0])
-    remote_public_key = public_key_list[i]
+    i = update.to_peer_index(public_key_list, remote_public_key)
     endpoint = config.get_endpoint(conf, i)
     multiplexer.register(endpoint)
     

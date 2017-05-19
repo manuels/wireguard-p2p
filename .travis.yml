@@ -7,31 +7,14 @@ env:
     - PACKAGE_NAME=wireguard-p2p
 
 install:
-  - pip install -r requirements.txt
+  - pip3 install -r requirements.txt
 
 script:
   - echo $TRAVIS_TAG
 
 before_deploy:
-  - local src=$(pwd)
-  - sudo apt-get install -y ruby-dev build-essential rpm
-  - git clone https://github.com/rbenv/rbenv.git ~/.rbenv
-  - cd ~/.rbenv && src/configure && make -C src
-  - export PATH="$HOME/.rbenv/bin:$PATH"
-  - eval "$(rbenv init -)"
-  - ~/.rbenv/bin/rbenv rehash
-  - gem install --no-ri --no-rdoc ffi
-  - gem install --no-ri --no-rdoc fpm
-  - cd $TRAVIS_BUILD_DIR
-  - ls -l
-  - echo $PACKAGE_NAME $TRAVIS_TAG
-  - fpm -s python -t deb -n $PACKAGE_NAME -v `echo $TRAVIS_TAG | tr -d v`
-      --depends python3-nacl
-      --python-package-name-prefix python3
-      --python-disable-dependency pynacl
-      --config-files etc/wireguard-p2p.conf
-      --deb-init etc/init.d/wireguard-p2p
-      --after-upgrade after-update.sh ./setup.py
+  - pwd
+  - sudo bash ./before-deploy.sh
 
 deploy:
   api_key:

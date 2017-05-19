@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from setuptools import setup, find_packages
 from codecs import open
 from os import path
@@ -10,7 +11,7 @@ with open(path.join(here, 'README.md'), encoding='utf-8') as f:
 setup(
     name='wireguard-p2p',
 
-    version='0.1.3',
+    version='0.2.0',
 
     description='A tool for setting up WireGuard connections from peer to peer.',
     long_description=long_description,
