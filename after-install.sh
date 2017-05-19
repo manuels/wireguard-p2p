@@ -10,3 +10,6 @@ chgrp wg-p2p /etc/wireguard/*.conf
 echo "Adjusting permissions of /etc/wireguard/*.conf to g+r..."
 chmod g+r /etc/wireguard/*.conf
 
+echo "Adding group wg-p2p to sudoers for /usr/bin/wg..."
+echo '%wg-p2p	ALL = NOPASSWD: /usr/bin/wg' >> /etc/sudoers
+

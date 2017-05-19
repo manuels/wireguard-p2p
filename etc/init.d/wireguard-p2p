@@ -15,9 +15,8 @@
 ### END INIT INFO
 
 dir="/usr/bin"
-cmd="wg-p2p"
-user="root"
-#user="wg-p2p"
+cmd="wg-p2p daemon"
+user="wg-p2p"
 
 name=`basename $0`
 pid_file="/var/run/$name.pid"
