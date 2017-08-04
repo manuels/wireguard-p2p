@@ -20,11 +20,11 @@ mod errors {
     error_chain!{}
 }
 
-use errors::*;
-
 mod wg;
 mod dht;
+mod crypto;
 mod duplicate;
+mod serialization;
 mod bulletinboard;
 
 use std::ops::DerefMut;
@@ -130,9 +130,6 @@ fn wireguard_dispatch(
         wg_addr: SocketAddr)
     -> BoxFuture<(),()>
 {
-//    let local_addr_mask = "127.0.0.1:0".parse().unwrap();
-//    let sinks = Arc::new(Mutex::new(HashMap::<SocketAddr, SplitSink<UdpFramed<RawCodec>>>::new()));
-
     let remote = remote.clone();
 
     public_stream.for_each(move |(buf, remote_addr)| {
@@ -144,26 +141,6 @@ fn wireguard_dispatch(
         remote.spawn(move |handle| {
             let mut sinks = sinks.lock().unwrap();
 
-            /*
-            if !sinks.contains_key(&remote_addr) {
-                debug!("New connection from {}.", remote_addr);
-
-                let (local_sink, local_stream) = {
-                    let msg = format!("Unable to bind UDP socket {}", local_addr_mask);
-                    let local_sock = UdpSocket::bind(&local_addr_mask, handle).expect(&msg);
-                    local_sock.framed(RawCodec).split()
-                };
-
-                let dst = remote_addr.clone();
-                let send_to_public = local_stream.map(move |(buf, _)| (buf, dst));
-
-                handle.spawn(send_to_public.map_err(|_| ()).forward(public_sink.sink_map_err(|_| ())).map(|_| ()));
-
-                sinks.insert(remote_addr, local_sink);
-            }
-
-            if let Some(ref mut local_sink) = sinks.get_mut(&remote_addr) {
-            */
             if let Some(&mut (ref mut local_sink, _)) = get_local_sink(&handle, iface, sinks.deref_mut(), public_sink, remote_addr) {
                 debug!("dispatch to {:?}", wg_addr);
                 if let Err(_) = local_sink.start_send((buf, wg_addr)) {
@@ -210,7 +187,6 @@ fn update_endpoint(handle: Handle,
 
             let peer = cfg.peers.remove(&remote_key).unwrap();
             if let Some(addr) = conn.and_then(|c| c.into()) {
-//                if Some(addr) != peer.endpoint {
                 let mut sinks = sinks.lock().unwrap();
                 if let Some(&mut (ref mut local_sink, local_addr)) = get_local_sink(&handle, interface, &mut sinks, public_sink, addr) {
                     peer.set_endpoint(&iface[..], local_addr).unwrap();
@@ -229,7 +205,6 @@ fn update_endpoint(handle: Handle,
     Box::new(future.then(|_| timeout).then(move |_| {
         info!("respawn...");
         remote.spawn(move |handle| {
-//            update_endpoint(handle.clone(), interface, remote_key)
             update_endpoint(handle.clone(), interface, remote_key, public_sink, sinks)
         });
         ok(())
