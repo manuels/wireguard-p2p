@@ -2,15 +2,13 @@ use futures::Future;
 use futures::Stream;
 use futures::Sink;
 use futures::future::ok;
-use futures::future::BoxFuture;
 use futures::sync::mpsc::Receiver;
 use futures::sync::mpsc::Sender;
 use futures::sync::mpsc::channel;
 
-#[allow(dead_code)]
 pub fn duplicate_stream<S,I,E>(stream: S)
-    -> (BoxFuture<(), E>, Receiver<I>, Receiver<I>)
-    where S: 'static + Stream<Item=I, Error=E> + Send,
+    -> (Box<Future<Item=(), Error=E>>, Receiver<I>, Receiver<I>)
+    where S: 'static + Stream<Item=I, Error=E>,
           I: 'static + Send + Clone,
           E: 'static + Send,
 {
@@ -39,13 +37,12 @@ pub fn duplicate_stream<S,I,E>(stream: S)
         ok(())
     });
 
-    (future.boxed(), rx1, rx2)
+    (Box::new(future), rx1, rx2)
 }
 
-#[allow(dead_code)]
 pub fn duplicate_sink<S,I>(sink: S)
-    -> (BoxFuture<(), ()>, Sender<I>)
-    where S: 'static + Sink<SinkItem=I, SinkError=()> + Send,
+    -> (Box<Future<Item=(), Error=()>>, Sender<I>)
+    where S: 'static + Sink<SinkItem=I, SinkError=()>,
           I: 'static + Send + Clone,
 {
     let (tx, rx) = channel(10);
@@ -53,7 +50,7 @@ pub fn duplicate_sink<S,I>(sink: S)
     let future = rx.forward(sink);
     let future = future.map(|_| ());
 
-    (future.boxed(), tx)
+    (Box::new(future), tx)
 }
 
 #[test]
