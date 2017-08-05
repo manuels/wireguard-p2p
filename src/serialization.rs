@@ -18,24 +18,28 @@ use errors::Result;
 use errors::ResultExt;
 
 pub trait Serialize: Sized {
-    fn serialize<W:Write>(&self, wrt: &mut W) -> Result<()>;
-    fn deserialize<R:Read>(rdr: &mut R) -> Result<Self>;
+    fn serialize<W: Write>(&self, wrt: &mut W) -> Result<()>;
+    fn deserialize<R: Read>(rdr: &mut R) -> Result<Self>;
 }
 
 impl Serialize for SocketAddr {
-    fn serialize<W:Write>(&self, wrt: &mut W) -> Result<()> {
+    fn serialize<W: Write>(&self, wrt: &mut W) -> Result<()> {
         let (ip, port) = match *self {
             SocketAddr::V4(a) => (a.ip().to_ipv6_compatible(), a.port()),
             SocketAddr::V6(a) => (a.ip().clone(), a.port()),
         };
 
-        wrt.write_all(&ip.octets()).chain_err(|| "Failed to write IP address")?;
-        wrt.write_u16::<NetworkEndian>(port).chain_err(|| "Failed to write port")?;
+        wrt.write_all(&ip.octets()).chain_err(
+            || "Failed to write IP address",
+        )?;
+        wrt.write_u16::<NetworkEndian>(port).chain_err(
+            || "Failed to write port",
+        )?;
 
         Ok(())
     }
 
-    fn deserialize<R:Read>(rdr: &mut R) -> Result<Self> {
+    fn deserialize<R: Read>(rdr: &mut R) -> Result<Self> {
         let mut addr = [0; 16];
         rdr.read_exact(&mut addr).chain_err(|| "No IP address")?;
         let ip_v6 = Ipv6Addr::from(addr);
@@ -51,7 +55,7 @@ impl Serialize for SocketAddr {
 }
 
 impl Serialize for (SystemTime, Connectivity) {
-    fn serialize<W:Write>(&self, mut wrt: &mut W) -> Result<()> {
+    fn serialize<W: Write>(&self, mut wrt: &mut W) -> Result<()> {
         let &(now, ref c) = self;
 
         let delta = match now.duration_since(UNIX_EPOCH) {
@@ -60,18 +64,22 @@ impl Serialize for (SystemTime, Connectivity) {
         };
 
         let (nat_type, addr) = match *c {
-            Connectivity::OpenInternet(addr)      => (1, Some(addr)),
-            Connectivity::FullConeNat(addr)       => (2, Some(addr)),
-            Connectivity::SymmetricNat            => (3, None),
+            Connectivity::OpenInternet(addr) => (1, Some(addr)),
+            Connectivity::FullConeNat(addr) => (2, Some(addr)),
+            Connectivity::SymmetricNat => (3, None),
             Connectivity::RestrictedPortNat(addr) => (4, Some(addr)),
             Connectivity::RestrictedConeNat(addr) => (5, Some(addr)),
             Connectivity::SymmetricFirewall(addr) => (6, Some(addr)),
-            Connectivity::UdpBlocked              => (7, None),
+            Connectivity::UdpBlocked => (7, None),
         };
 
         wrt.write_u8(0x02).chain_err(|| "Writing version failed")?;
-        wrt.write_u64::<NetworkEndian>(delta.as_secs()).chain_err(|| "Writing time failed")?;
-        wrt.write_u8(nat_type).chain_err(|| "Writing NAT type failed")?;
+        wrt.write_u64::<NetworkEndian>(delta.as_secs()).chain_err(
+            || "Writing time failed",
+        )?;
+        wrt.write_u8(nat_type).chain_err(
+            || "Writing NAT type failed",
+        )?;
         if let Some(addr) = addr {
             addr.serialize(&mut wrt)?;
         }
@@ -79,13 +87,15 @@ impl Serialize for (SystemTime, Connectivity) {
         Ok(())
     }
 
-    fn deserialize<R:Read>(mut rdr: &mut R) -> Result<Self> {
+    fn deserialize<R: Read>(mut rdr: &mut R) -> Result<Self> {
         let version = rdr.read_u8().chain_err(|| "Error reading version")?;
         if version != 2 {
             return Err("Invalid version".into());
         }
 
-        let unix_time = rdr.read_u64::<NetworkEndian>().chain_err(|| "Error reading time stamp")?;
+        let unix_time = rdr.read_u64::<NetworkEndian>().chain_err(
+            || "Error reading time stamp",
+        )?;
         let time = UNIX_EPOCH + Duration::from_secs(unix_time);
 
         let nat_type = match rdr.read_u8().chain_err(|| "Error reading NAT type")? {
@@ -102,4 +112,3 @@ impl Serialize for (SystemTime, Connectivity) {
         Ok((time, nat_type))
     }
 }
-

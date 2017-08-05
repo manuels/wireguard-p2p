@@ -1,7 +1,6 @@
 use std::process::Stdio;
 use std::process::Command;
 use std::net::SocketAddr;
-use std::str::FromStr;
 use std::io::Write;
 use std::io::Read;
 use std::collections::HashMap;
@@ -24,12 +23,22 @@ pub struct Interface {
 
 impl Interface {
     fn parse(props: &Properties) -> Result<Interface> {
-        let secret_key = props.get("PrivateKey").ok_or_else(|| "[Interface] section contains no 'PrivateKey'")?;
-        let secret_key = base64::decode(secret_key).chain_err(|| "PrivateKey is not valid base64")?;
-        let secret_key = SecretKey::from_slice(&secret_key[..32]).ok_or_else(|| "Invalid PrivateKey value")?;
+        let secret_key = props.get("PrivateKey").ok_or_else(
+            || "[Interface] section contains no 'PrivateKey'",
+        )?;
+        let secret_key = base64::decode(secret_key).chain_err(
+            || "PrivateKey is not valid base64",
+        )?;
+        let secret_key = SecretKey::from_slice(&secret_key[..32]).ok_or_else(
+            || "Invalid PrivateKey value",
+        )?;
 
-        let listen_port = props.get("ListenPort").ok_or_else(|| "[Interface] section contains no 'ListenPort'")?;
-        let listen_port = listen_port.parse::<u16>().chain_err(|| "ListenPort is invalid")?;
+        let listen_port = props.get("ListenPort").ok_or_else(
+            || "[Interface] section contains no 'ListenPort'",
+        )?;
+        let listen_port = listen_port.parse::<u16>().chain_err(
+            || "ListenPort is invalid",
+        )?;
 
         Ok(Interface {
             secret_key,
@@ -47,15 +56,23 @@ impl Interface {
 
         let b64_key = base64::encode(&self.secret_key[..]);
         let mut stdin = process.stdin.ok_or_else(|| "wg: Failed to open stdin")?;
-        stdin.write_all(b64_key.as_bytes()).chain_err(|| "Error writing to stdin")?;
+        stdin.write_all(b64_key.as_bytes()).chain_err(
+            || "Error writing to stdin",
+        )?;
         drop(stdin);
 
         let mut s = String::new();
         let mut stdout = process.stdout.ok_or_else(|| "wg: Failed to open stdout")?;
-        stdout.read_to_string(&mut s).chain_err(|| "wg: Reading stdout failed")?;;
+        stdout.read_to_string(&mut s).chain_err(
+            || "wg: Reading stdout failed",
+        )?;;
 
-        let pubkey = base64::decode(&s.trim()[..]).chain_err(|| "Base64-decoding public key failed!")?;
-        let pubkey = PublicKey::from_slice(&pubkey[..32]).ok_or_else(|| "Decoding public key failed!")?;
+        let pubkey = base64::decode(&s.trim()[..]).chain_err(
+            || "Base64-decoding public key failed!",
+        )?;
+        let pubkey = PublicKey::from_slice(&pubkey[..32]).ok_or_else(
+            || "Decoding public key failed!",
+        )?;
         Ok(pubkey)
     }
 }
@@ -67,17 +84,25 @@ pub struct Peer {
 
 impl Peer {
     fn parse(props: &Properties) -> Result<Peer> {
-        let public_key = props.get("PublicKey").ok_or_else(|| "[Peer] section contains no 'PublicKey'")?;
-        let public_key = base64::decode(public_key).chain_err(|| "PublicKey is not valid base64")?;
-        let public_key = PublicKey::from_slice(&public_key[..32]).ok_or_else(|| "Invalid PublicKey value")?;
+        let public_key = props.get("PublicKey").ok_or_else(
+            || "[Peer] section contains no 'PublicKey'",
+        )?;
+        let public_key = base64::decode(public_key).chain_err(
+            || "PublicKey is not valid base64",
+        )?;
+        let public_key = PublicKey::from_slice(&public_key[..32]).ok_or_else(
+            || "Invalid PublicKey value",
+        )?;
 
-        let endpoint = props.get("Endpoint");
-//        let endpoint = endpoint.map(|s| SocketAddr::from_str(s).chain_err(|| "Invalid address")?);
-        let endpoint = endpoint.and_then(|s| SocketAddr::from_str(s).ok());
+        let endpoint = if let Some(s) = props.get("Endpoint") {
+            Some(s.parse().chain_err(|| "Invalid address")?)
+        } else {
+            None
+        };
 
         Ok(Peer {
             public_key,
-            endpoint,
+            endpoint: endpoint,
         })
     }
 
@@ -130,8 +155,11 @@ impl WireGuardConfig {
         let mut peer_list = Vec::new();
 
         for (i, txt) in s.split("[Peer]").enumerate() {
-            let ini = if i == 0 { txt.to_string() }
-                      else { format!("[Peer]{}", txt) };
+            let ini = if i == 0 {
+                txt.to_string()
+            } else {
+                format!("[Peer]{}", txt)
+            };
 
             let ini = Ini::load_from_str(&ini[..]);
             let ini = ini.chain_err(|| "Parsing INI failed")?;
@@ -157,9 +185,8 @@ impl WireGuardConfig {
 }
 
 #[test]
-fn test_valid () {
-    let ini =
-"[Interface]
+fn test_valid() {
+    let ini = "[Interface]
 Address = 10.0.0.25
 PrivateKey = GBKsd3x+RCOc0t98XVAoRxlrauAHgATCgjr7vBeI5HM=
 ListenPort = 50465
@@ -175,4 +202,3 @@ Endpoint = 127.0.0.1:8123
     assert!(cfg.interface.listen_port > 0);
     assert_eq!(cfg.peers.len(), 1);
 }
-

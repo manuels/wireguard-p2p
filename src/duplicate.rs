@@ -1,16 +1,20 @@
 use futures::Future;
 use futures::Stream;
 use futures::Sink;
-use futures::future::ok;
+use futures::future::result;
 use futures::sync::mpsc::Receiver;
 use futures::sync::mpsc::Sender;
 use futures::sync::mpsc::channel;
 
-pub fn duplicate_stream<S,I,E>(stream: S)
-    -> (Box<Future<Item=(), Error=E>>, Receiver<I>, Receiver<I>)
-    where S: 'static + Stream<Item=I, Error=E>,
-          I: 'static + Send + Clone,
-          E: 'static + Send,
+use tokio_core::reactor::Handle;
+
+use errors::Error;
+use errors::ResultExt;
+
+pub fn duplicate_stream<S, I>(handle: &Handle, stream: S) -> (Receiver<I>, Receiver<I>)
+where
+    S: 'static + Stream<Item = I, Error = Error>,
+    I: 'static + Send + Clone,
 {
     let (mut tx1, rx1) = channel(10);
     let (mut tx2, rx2) = channel(10);
@@ -18,39 +22,40 @@ pub fn duplicate_stream<S,I,E>(stream: S)
     let future = stream.for_each(move |item| {
         // UDP => AsyncSink::NotReady is ignored in this function
 
-        if let Err(err) = tx1.start_send(item.clone()) {
-            unimplemented!()
-        }
+        let res11 = tx1.start_send(item.clone()).chain_err(
+            || "start_send to tx1 failed",
+        );
+        let res21 = tx2.start_send(item.clone()).chain_err(
+            || "start_send to tx2 failed",
+        );
+        let res12 = tx1.poll_complete().chain_err(
+            || "poll_complete() to tx1 failed",
+        );
+        let res22 = tx2.poll_complete().chain_err(
+            || "poll_complete() to tx2 failed",
+        );
 
-        if let Err(err) = tx2.start_send(item) {
-            unimplemented!()
-        }
-
-        if let Err(err) = tx1.poll_complete() {
-            unimplemented!()
-        }
-
-        if let Err(err) = tx2.poll_complete() {
-            unimplemented!()
-        }
-
-        ok(())
+        result(res11.and(res21).and(res12).and(res22).and(Ok(())))
     });
 
-    (Box::new(future), rx1, rx2)
+    let future = future.map(|_| ()).map_err(|_| ());
+    handle.spawn(future);
+
+    (rx1, rx2)
 }
 
-pub fn duplicate_sink<S,I>(sink: S)
-    -> (Box<Future<Item=(), Error=()>>, Sender<I>)
-    where S: 'static + Sink<SinkItem=I, SinkError=()>,
-          I: 'static + Send + Clone,
+pub fn duplicate_sink<S, I>(handle: &Handle, sink: S) -> Sender<I>
+where
+    S: 'static + Sink<SinkItem = I, SinkError = ()>,
+    I: 'static + Send + Clone,
 {
     let (tx, rx) = channel(10);
 
     let future = rx.forward(sink);
     let future = future.map(|_| ());
+    handle.spawn(future);
 
-    (Box::new(future), tx)
+    tx
 }
 
 #[test]
@@ -86,4 +91,3 @@ fn test_duplicate_stream() {
     assert!(received1.load(Ordering::SeqCst));
     assert!(received2.load(Ordering::SeqCst));
 }
-
