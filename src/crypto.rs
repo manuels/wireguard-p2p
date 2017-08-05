@@ -29,15 +29,12 @@ impl Encrypt for (SecretKey, PublicKey) {
         if msg.len() != n + m {
             return Err("Message does not have the right length!".into());
         }
-
         let (nonce, msg) = msg.split_at(n);
 
-        let nonce = Nonce::from_slice(nonce).ok_or_else(
-            || "Nonce is not 24 byte",
-        )?;
-        match box_::open(&msg, &nonce, &public_key, &secret_key) {
-            Ok(msg) => Ok(msg),
-            Err(()) => Err("Decryption failed!".into()),
-        }
+        let err = || "Nonce is not 24 byte";
+        let nonce = Nonce::from_slice(nonce).ok_or_else(err)?;
+
+        let err = |_| "Decryption failed!".into();
+        box_::open(&msg, &nonce, &public_key, &secret_key).map_err(err)
     }
 }
