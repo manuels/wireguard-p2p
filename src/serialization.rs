@@ -29,23 +29,26 @@ impl Serialize for SocketAddr {
             SocketAddr::V6(a) => (a.ip().clone(), a.port()),
         };
 
-        wrt.write_all(&ip.octets()).chain_err(
-            || "Failed to write IP address",
-        )?;
-        wrt.write_u16::<NetworkEndian>(port).chain_err(
-            || "Failed to write port",
-        )?;
+        let err = || "Failed to write IP address";
+        wrt.write_all(&ip.octets()).chain_err(err)?;
+
+        let err = || "Failed to write port";
+        wrt.write_u16::<NetworkEndian>(port).chain_err(err)?;
 
         Ok(())
     }
 
     fn deserialize<R: Read>(rdr: &mut R) -> Result<Self> {
+        let ip_v6: Ipv6Addr;
         let mut addr = [0; 16];
-        rdr.read_exact(&mut addr).chain_err(|| "No IP address")?;
-        let ip_v6 = Ipv6Addr::from(addr);
 
-        let port = rdr.read_u16::<NetworkEndian>().chain_err(|| "No port")?;
+        let err = || "No IP address found";
+        rdr.read_exact(&mut addr).chain_err(err)?;
 
+        let err = || "No port found";
+        let port = rdr.read_u16::<NetworkEndian>().chain_err(err)?;
+
+        ip_v6 = addr.into();
         if let Some(ip_v4) = ip_v6.to_ipv4() {
             Ok(SocketAddrV4::new(ip_v4, port).into())
         } else {
@@ -58,28 +61,28 @@ impl Serialize for (SystemTime, Connectivity) {
     fn serialize<W: Write>(&self, mut wrt: &mut W) -> Result<()> {
         let &(now, ref c) = self;
 
-        let delta = match now.duration_since(UNIX_EPOCH) {
-            Ok(duration) => duration,
-            Err(err) => return Err(err).chain_err(|| "SystemTime is invalid"),
-        };
+        let delta = now.duration_since(UNIX_EPOCH);
+        let delta = delta.chain_err(|| "SystemTime is invalid")?;
 
         let (nat_type, addr) = match *c {
-            Connectivity::OpenInternet(addr) => (1, Some(addr)),
-            Connectivity::FullConeNat(addr) => (2, Some(addr)),
-            Connectivity::SymmetricNat => (3, None),
+            Connectivity::OpenInternet(addr)      => (1, Some(addr)),
+            Connectivity::FullConeNat(addr)       => (2, Some(addr)),
+            Connectivity::SymmetricNat            => (3, None),
             Connectivity::RestrictedPortNat(addr) => (4, Some(addr)),
             Connectivity::RestrictedConeNat(addr) => (5, Some(addr)),
             Connectivity::SymmetricFirewall(addr) => (6, Some(addr)),
-            Connectivity::UdpBlocked => (7, None),
+            Connectivity::UdpBlocked              => (7, None),
         };
 
-        wrt.write_u8(0x02).chain_err(|| "Writing version failed")?;
-        wrt.write_u64::<NetworkEndian>(delta.as_secs()).chain_err(
-            || "Writing time failed",
-        )?;
-        wrt.write_u8(nat_type).chain_err(
-            || "Writing NAT type failed",
-        )?;
+        let err = || "Writing version failed";
+        wrt.write_u8(0x02).chain_err(err)?;
+
+        let err = || "Writing time failed";
+        wrt.write_u64::<NetworkEndian>(delta.as_secs()).chain_err(err)?;
+
+        let err = || "Writing NAT type failed";
+        wrt.write_u8(nat_type).chain_err(err)?;
+
         if let Some(addr) = addr {
             addr.serialize(&mut wrt)?;
         }
@@ -88,17 +91,20 @@ impl Serialize for (SystemTime, Connectivity) {
     }
 
     fn deserialize<R: Read>(mut rdr: &mut R) -> Result<Self> {
-        let version = rdr.read_u8().chain_err(|| "Error reading version")?;
+        let err = || "Error reading version";
+        let version = rdr.read_u8().chain_err(err)?;
+
         if version != 2 {
             return Err("Invalid version".into());
         }
 
-        let unix_time = rdr.read_u64::<NetworkEndian>().chain_err(
-            || "Error reading time stamp",
-        )?;
+        let err = || "Error reading time stamp";
+        let unix_time = rdr.read_u64::<NetworkEndian>().chain_err(err)?;
+
         let time = UNIX_EPOCH + Duration::from_secs(unix_time);
 
-        let nat_type = match rdr.read_u8().chain_err(|| "Error reading NAT type")? {
+        let err = || "Error reading NAT type";
+        let nat_type = match rdr.read_u8().chain_err(err)? {
             1 => Connectivity::OpenInternet(SocketAddr::deserialize(&mut rdr)?),
             2 => Connectivity::FullConeNat(SocketAddr::deserialize(&mut rdr)?),
             3 => Connectivity::SymmetricNat,
