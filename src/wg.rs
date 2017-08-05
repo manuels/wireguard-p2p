@@ -23,22 +23,20 @@ pub struct Interface {
 
 impl Interface {
     fn parse(props: &Properties) -> Result<Interface> {
-        let secret_key = props.get("PrivateKey").ok_or_else(
-            || "[Interface] section contains no 'PrivateKey'",
-        )?;
-        let secret_key = base64::decode(secret_key).chain_err(
-            || "PrivateKey is not valid base64",
-        )?;
-        let secret_key = SecretKey::from_slice(&secret_key[..32]).ok_or_else(
-            || "Invalid PrivateKey value",
-        )?;
+        let err = || "[Interface] section contains no 'PrivateKey'";
+        let secret_key = props.get("PrivateKey").ok_or_else(err)?;
 
-        let listen_port = props.get("ListenPort").ok_or_else(
-            || "[Interface] section contains no 'ListenPort'",
-        )?;
-        let listen_port = listen_port.parse::<u16>().chain_err(
-            || "ListenPort is invalid",
-        )?;
+        let err = || "PrivateKey is not valid base64";
+        let secret_key = base64::decode(secret_key).chain_err(err)?;
+
+        let err = || "Invalid PrivateKey value";
+        let secret_key = SecretKey::from_slice(&secret_key[..32]).ok_or_else(err)?;
+
+        let err = || "[Interface] section contains no 'ListenPort'";
+        let listen_port = props.get("ListenPort").ok_or_else(err)?;
+
+        let err = || "ListenPort is invalid";
+        let listen_port = listen_port.parse::<u16>().chain_err(err)?;
 
         Ok(Interface {
             secret_key,
@@ -55,24 +53,27 @@ impl Interface {
             .chain_err(|| "failed to execute /usr/bin/wg")?;
 
         let b64_key = base64::encode(&self.secret_key[..]);
-        let mut stdin = process.stdin.ok_or_else(|| "wg: Failed to open stdin")?;
-        stdin.write_all(b64_key.as_bytes()).chain_err(
-            || "Error writing to stdin",
-        )?;
+
+        let err = || "wg: Failed to open stdin";
+        let mut stdin = process.stdin.ok_or_else(err)?;
+
+        let err = || "Error writing to stdin";
+        stdin.write_all(b64_key.as_bytes()).chain_err(err)?;
         drop(stdin);
 
-        let mut s = String::new();
-        let mut stdout = process.stdout.ok_or_else(|| "wg: Failed to open stdout")?;
-        stdout.read_to_string(&mut s).chain_err(
-            || "wg: Reading stdout failed",
-        )?;;
+        let err = || "wg: Failed to open stdout";
+        let mut stdout = process.stdout.ok_or_else(err)?;
 
-        let pubkey = base64::decode(&s.trim()[..]).chain_err(
-            || "Base64-decoding public key failed!",
-        )?;
-        let pubkey = PublicKey::from_slice(&pubkey[..32]).ok_or_else(
-            || "Decoding public key failed!",
-        )?;
+        let mut s = String::new();
+        let err = || "wg: Reading stdout failed";
+        stdout.read_to_string(&mut s).chain_err(err)?;
+
+        let err = || "Base64-decoding public key failed!";
+        let pubkey = base64::decode(&s.trim()[..]).chain_err(err)?;
+
+        let err = || "Decoding public key failed!";
+        let pubkey = PublicKey::from_slice(&pubkey[..32]).ok_or_else(err)?;
+
         Ok(pubkey)
     }
 }
@@ -84,15 +85,14 @@ pub struct Peer {
 
 impl Peer {
     fn parse(props: &Properties) -> Result<Peer> {
-        let public_key = props.get("PublicKey").ok_or_else(
-            || "[Peer] section contains no 'PublicKey'",
-        )?;
-        let public_key = base64::decode(public_key).chain_err(
-            || "PublicKey is not valid base64",
-        )?;
-        let public_key = PublicKey::from_slice(&public_key[..32]).ok_or_else(
-            || "Invalid PublicKey value",
-        )?;
+        let err = || "[Peer] section contains no 'PublicKey'";
+        let public_key = props.get("PublicKey").ok_or_else(err)?;
+
+        let err = || "PublicKey is not valid base64";
+        let public_key = base64::decode(public_key).chain_err(err)?;
+
+        let err = || "Invalid PublicKey value";
+        let public_key = PublicKey::from_slice(&public_key[..32]).ok_or_else(err)?;
 
         let endpoint = if let Some(s) = props.get("Endpoint") {
             Some(s.parse().chain_err(|| "Invalid address")?)
@@ -173,9 +173,11 @@ impl WireGuardConfig {
             }
         }
 
-        let peer_list = HashMap::from_iter(peer_list.into_iter().map(|p| (p.public_key, p)));
+        let peer_list = peer_list.into_iter().map(|p| (p.public_key, p));
+        let peer_list = HashMap::from_iter(peer_list);
 
-        let interface = interface.ok_or_else(|| "No [Interface] section found")?;
+        let err = || "No [Interface] section found";
+        let interface = interface.ok_or_else(err)?;
 
         Ok(WireGuardConfig {
             interface: interface,
