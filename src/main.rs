@@ -1,5 +1,12 @@
 #![recursion_limit = "1024"]
 
+macro_rules! box_try {
+    ($e:expr) => (match $e {
+        Ok(t) => t,
+        Err(e) => return Box::new(::futures::future::err(e.into())),
+    })
+}
+
 extern crate futures;
 extern crate tokio_core;
 
@@ -28,6 +35,7 @@ mod dht;
 mod crypto;
 mod duplicate;
 mod serialization;
+mod interval;
 mod bulletinboard;
 
 use std::ops::DerefMut;
@@ -62,7 +70,7 @@ use duplicate::duplicate_stream;
 use duplicate::duplicate_sink;
 
 use dht::dht_get;
-
+use interval::Interval;
 use wg::WireGuardConfig;
 
 struct RawCodec;
@@ -70,6 +78,8 @@ struct RawCodec;
 type MsgPair = (Vec<u8>, SocketAddr);
 
 use wg::PublicKey;
+
+type BoxedFuture<T> = Box<Future<Item=T, Error=errors::Error>>;
 
 impl UdpCodec for RawCodec {
     type In = MsgPair;
@@ -175,7 +185,7 @@ fn update_endpoint(
     sinks: Arc<Mutex<HashMap<SocketAddr, (SplitSink<UdpFramed<RawCodec>>, SocketAddr)>>>,
 ) -> Box<Future<Item = (), Error = ()>> {
     let remote = handle.remote().clone();
-    let res = dht_get(handle.clone(), interface.clone(), remote_key);
+    let res = dht_get(handle.clone(), &interface[..], remote_key);
 
     debug!("Getting remote connectivity...");
     let iface = interface.clone();
@@ -185,8 +195,7 @@ fn update_endpoint(
         let public_sink = public_sink.clone();
         let sinks = sinks.clone();
 
-        Box::new(
-            future
+        Box::new(future
                 .or_else(|e| {
                     warn!("err={:?}", e);
                     err(e)
@@ -257,17 +266,26 @@ fn main() {
     let public_stream = public_stream.then(|e| e.chain_err(|| "public_stream failed"));
     let (public_stream1, public_stream2) = duplicate_stream(&handle, public_stream);
 
-    let public_stream1 = public_stream1.map_err(|_| ());
-    let public_sink1 = public_sink.clone().sink_map_err(|_| ());
-    let future = dht::stun_publish(
-        handle.clone(),
-        public_sink1,
-        public_stream1,
-        interface.to_string(),
-        remote_key,
-    );
-    let future = future.map_err(|_| ());
-    handle.spawn(future);
+    let public_stream1 = public_stream1.map_err(|e| "Stream failed".into());
+    let public_sink1 = public_sink.clone().sink_map_err(|e| "Stream failed".into());
+
+    let interval = Interval::new(handle.clone(), Duration::from_secs(5*60));
+    let iface = interface.clone();
+    let f = interval.run(Box::new(public_sink1), Box::new(public_stream1), move |handle, public_sink, public_stream| {
+        let future = dht::stun_publish(
+            handle.clone(),
+            public_sink,
+            public_stream,
+            iface.to_string(),
+            remote_key);
+        future.then(|res| {
+            match res {
+                Ok((sink, stream)) => ok((sink, stream)),
+                Err((sink, stream, e)) => err((sink, stream, e)),
+            }
+        })
+    });
+    handle.spawn(f.map_err(|_| ()));
 
     handle.spawn(update_endpoint(
         handle.clone(),

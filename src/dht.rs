@@ -8,11 +8,8 @@ use futures::Stream;
 use futures::Sink;
 use futures::Future;
 use futures::future::ok;
-use futures::future::BoxFuture;
-use futures::future::FutureResult;
 
 use tokio_core::reactor::Handle;
-use tokio_core::reactor::Timeout;
 
 use stun3489;
 use stun3489::Connectivity;
@@ -24,128 +21,113 @@ use MsgPair;
 use catch_and_report_error;
 use bulletinboard::BulletinBoard;
 
+use BoxedFuture;
+use crypto::Encrypt;
+use serialization::Serialize;
 use wg::WireGuardConfig;
 use wg::PublicKey;
-use serialization::Serialize;
-use crypto::Encrypt;
 
-pub fn stun_publish<SI, ST, E>(
-    handle: Handle,
-    sink: SI,
-    stream: ST,
-    interface: String,
-    remote_key: PublicKey,
-) -> BoxFuture<(), ()>
-where
-    SI: Sink<SinkItem = MsgPair, SinkError = E> + Send + 'static,
-    ST: Stream<Item = MsgPair, Error = E> + Send + 'static,
+pub fn stun_publish(handle: Handle,
+                    sink: Box<Sink<SinkItem=MsgPair, SinkError=Error>>,
+                    stream: Box<Stream<Item=MsgPair, Error=Error>>,
+                    interface: String,
+                    remote_key: PublicKey)
+    -> Box<Future<Item=(Box<Sink<SinkItem=MsgPair, SinkError=Error>>,
+                        Box<Stream<Item=MsgPair, Error=Error>>),
+                  Error=(Box<Sink<SinkItem=MsgPair, SinkError=Error>>,
+                         Box<Stream<Item=MsgPair, Error=Error>>,
+                         Error)>>
 {
     let timeout = Duration::from_secs(1);
+
+    let err = || "Unable to parse bind address";
     let bind_addr = "0.0.0.0:0".parse().unwrap();
+//    let bind_addr = box_try!("0.0.0.0:0".parse().chain_err(err));
+
+    let err = || "Unable to parse stun server address";
     let server = "192.95.17.62:3478".parse().unwrap(); // stun.callwithus.com
+//    let server = box_try!("192.95.17.62:3478".parse().chain_err(err)); // stun.callwithus.com
 
     // TODO: filter stream for stun messages
     let stream = stream.map_err(|_| io::Error::new(ErrorKind::Other, ""));
     let sink = sink.sink_map_err(|_| io::Error::new(ErrorKind::Other, ""));
 
-    let stun = stun3489::stun3489_generic(
-        stream.boxed(),
-        Box::new(sink),
-        bind_addr,
-        server,
-        &handle,
-        timeout,
-    );
-    let stun = stun.and_then(|(stream, sink, conn)| {
+    let future = stun3489::stun3489_generic(Box::new(stream), Box::new(sink),
+        bind_addr, server, &handle, timeout);
+
+    let future = future.and_then(|(stream, sink, conn)| {
         info!("{:?} detected.", conn);
-        ok((stream, sink, conn))
+        ok((sink, stream, conn))
     });
 
-    let remote = handle.remote().clone();
-    let dht_publish = move |(stream, sink, c)| {
-        let iface = interface.clone();
-        remote.clone().spawn(move |handle| {
-            let future = catch_and_report_error(move || {
-                let cfg = WireGuardConfig::new(&interface[..]).chain_err(
-                    || "Reading WireGuard config failed.",
-                )?;
-                let local_key = cfg.interface.public_key().chain_err(
-                    || "Failed getting our public key.",
-                )?;
+    let future = future.and_then(move |(sink, stream, conn)| {
+        let remote = handle.remote();
+        let mut wrt = vec![];
 
-                let key = [&local_key[..], &remote_key[..]].concat();
-                let mut value = vec![];
-                (SystemTime::now(), c).serialize(&mut value).chain_err(
-                    || "Encoding DHT message failed.",
-                )?;
-                let value = (cfg.interface.secret_key, remote_key).encrypt(&value[..]);
+        let err = || "Reading WireGuard config failed.";
+        let cfg = WireGuardConfig::new(&interface[..]).chain_err(err).unwrap();
+        let interface = cfg.interface;
 
-                let future = BulletinBoard::insert(handle.clone(), &key[..], &value[..]);
-                let future = future.then(move |res| {
-                    if let Err(e) = res {
-                        warn!("Publishing Connectivity failed: {:?}", e);
-                    } else {
-                        debug!("Connectivity published.");
-                    }
-                    ok(()) as FutureResult<(), ()>
-                });
+        let err = || "Failed getting our public key.";
+        let local_key = interface.public_key().chain_err(err).unwrap();
 
-                debug!("Publishing connectivity...");
-                Ok(future)
-            });
+        let key_pair = (interface.secret_key, remote_key);
 
-            future.flatten().then(move |_| {
-                remote.clone().spawn(move |handle| {
-                    let timeout = Timeout::new(Duration::from_secs(5 * 60), &handle).unwrap();
-                    timeout.then(move |_| {
-                        remote.spawn(move |handle| {
-                            stun_publish(handle.clone(), sink, stream, iface, remote_key)
-                        });
+        let err = || "Encoding DHT message failed.";
+        (SystemTime::now(), conn).serialize(&mut wrt).chain_err(err).unwrap();
 
-                        ok(())
-                    })
-                });
+        remote.spawn(move |handle: &Handle| {
+            let key = [&local_key[..], &remote_key[..]].concat();
+            let value = key_pair.encrypt(&wrt[..]);
 
-                ok(())
-            })
+            BulletinBoard::insert(handle.clone(), &key[..], &value[..]).map_err(|_| ())
         });
-        ok(())
-    };
 
-    stun.and_then(dht_publish)
-        .map(|_| ())
-        .map_err(|_| ())
-        .boxed()
+        ok((sink, stream))
+    });
+
+    Box::new(future.map_err(|(stream, sink, e)| {
+        (Box::new(sink.sink_map_err(|e| Error::with_chain(e, ""))) as Box<Sink<SinkItem=MsgPair, SinkError=Error>>,
+         Box::new(stream.map_err(|e| Error::with_chain(e, ""))) as Box<Stream<Item=MsgPair, Error=Error>>,
+         Error::with_chain(e, "")
+         )
+    }).map(|(sink, stream)| {
+        (Box::new(sink.sink_map_err(|e| Error::with_chain(e, ""))) as Box<Sink<SinkItem=MsgPair, SinkError=Error>>,
+         Box::new(stream.map_err(|e| Error::with_chain(e, ""))) as Box<Stream<Item=MsgPair, Error=Error>>,
+         )
+    }))
 }
 
-pub fn dht_get(
-    handle: Handle,
-    interface: String,
-    remote_key: PublicKey,
-) -> Result<Box<Future<Item = Option<Connectivity>, Error = Error>>> {
-    let cfg = WireGuardConfig::new(&interface[..]).chain_err(
-        || "Reading WireGuard config failed.",
-    )?;
-    let local_key = cfg.interface.public_key().chain_err(
-        || "Failed getting our public key.",
-    )?;
+pub fn dht_get(handle: Handle,
+               interface: &str,
+               remote_key: PublicKey)
+    -> Result<BoxedFuture<Option<Connectivity>>>
+{
+    let err = || "Reading WireGuard config failed.";
+    let cfg = WireGuardConfig::new(&interface[..]).chain_err(err)?;
+    let iface = cfg.interface;
 
-    let key_pair = (cfg.interface.secret_key, remote_key);
+    let err = || "Failed getting our public key.";
+    let local_key = iface.public_key().chain_err(err)?;
+
     let key = [&remote_key[..], &local_key[..]].concat();
     let future = BulletinBoard::get(handle, &key[..]);
 
     let future = future.and_then(move |value_list| {
-        info!("value_list len={}", value_list.len());
+        let key_pair = (iface.secret_key, remote_key);
+
+        info!("Found {} potential remote credentials", value_list.len());
         let value_list = value_list.into_iter();
         let value_list = value_list.filter_map(|v| key_pair.decrypt(&v[..]).ok());
-        let value_list =
-            value_list.filter_map(|r| Serialize::deserialize(&mut Cursor::new(r)).ok());
+        let value_list = value_list.map(Cursor::new);
+        let value_list = value_list.filter_map(|mut r| Serialize::deserialize(&mut r).ok());
 
-        let mut value_list: Vec<(SystemTime, Connectivity)> = value_list.collect();
-        value_list.sort_by_key(|t| t.0);
+        let mut conn_list: Vec<(SystemTime, Connectivity)>;
+        conn_list = value_list.collect();
+        conn_list.sort_by(|a, b| a.0.cmp(&b.0).reverse());
 
-        let mut value_list = value_list.into_iter().map(|t| t.1);
-        Ok(value_list.next())
+        let mut conn_list = conn_list.into_iter().map(|t| t.1);
+        Ok(conn_list.next())
     });
 
     Ok(Box::new(future))
