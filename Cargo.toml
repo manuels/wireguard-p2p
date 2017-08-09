@@ -17,4 +17,5 @@ rust-ini = "*"
 sodiumoxide = "*"
 base64 = "0.6.0"
 error-chain = "*"
+docopt = "*"
 

@@ -18,7 +18,6 @@ use errors::*;
 use errors::Error;
 
 use MsgPair;
-use catch_and_report_error;
 use bulletinboard::BulletinBoard;
 
 use BoxedFuture;

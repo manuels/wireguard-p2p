@@ -9,6 +9,7 @@ macro_rules! box_try {
 
 extern crate futures;
 extern crate tokio_core;
+extern crate docopt;
 
 #[macro_use]
 extern crate log;
@@ -33,9 +34,11 @@ use errors::ResultExt;
 mod wg;
 mod dht;
 mod crypto;
+mod search;
+mod publish;
+mod interval;
 mod duplicate;
 mod serialization;
-mod interval;
 mod bulletinboard;
 
 use std::ops::DerefMut;
@@ -51,7 +54,6 @@ use futures::Stream;
 use futures::Sink;
 use futures::Future;
 use futures::future::BoxFuture;
-use futures::future::FutureResult;
 use futures::future::ok;
 use futures::future::err;
 use futures::stream::SplitSink;
@@ -68,6 +70,11 @@ use tokio_core::net::UdpFramed;
 
 use duplicate::duplicate_stream;
 use duplicate::duplicate_sink;
+
+use docopt::Docopt;
+
+use search::search;
+use publish::publish;
 
 use dht::dht_get;
 use interval::Interval;
@@ -234,8 +241,46 @@ fn update_endpoint(
     }))
 }
 
+const USAGE: &'static str = "
+WireGuard Peer-to-Peer Tool
+
+Usage: wg-p2p search <peer_name>
+       wg-p2p publish <interface> <peer_name>
+       wg-p2p daemon [--config=<path>]
+
+Options:
+    -c, --config=<path>  Path to config file [default: /etc/wireguard-p2p.conf].
+";
+
 fn main() {
-    env_logger::init().unwrap();
+    main_().unwrap()
+}
+
+fn main_() -> errors::Result<()> {
+    env_logger::init().chain_err(|| "Failed to init env_logger")?;
+
+    let argv = std::env::args();
+    let args = Docopt::new(USAGE)
+                  .and_then(|d| d.argv(argv).parse())
+                  .unwrap_or_else(|e| e.exit());
+
+    if args.get_bool("search") {
+        let peer_name = args.get_str("<peer_name>").to_string();
+        search(peer_name)?;
+
+        return Ok(());
+    } else if args.get_bool("publish") {
+        let interface = args.get_str("<interface>").to_string();
+        let peer_name = args.get_str("<peer_name>").to_string();
+
+        publish(interface, peer_name)?;
+
+        return Ok(());
+    } else if args.get_bool("daemon") {
+        unimplemented!()
+    } else {
+        unreachable!()
+    }
 
     let mut argv = std::env::args().skip(1);
     let interface = argv.next().unwrap();
@@ -299,22 +344,3 @@ fn main() {
     core.run(future).unwrap();
 }
 
-fn catch_and_report_error<F, R>(func: F) -> FutureResult<R, ()>
-where
-    F: FnOnce() -> errors::Result<R>,
-{
-    match func() {
-        Ok(r) => ok(r),
-        Err(e) => {
-            error!("error: {}", e);
-            for e in e.iter().skip(1) {
-                error!("caused by: {}", e);
-            }
-
-            if let Some(backtrace) = e.backtrace() {
-                error!("backtrace: {:?}", backtrace);
-            }
-            err(())
-        }
-    }
-}
