@@ -31,8 +31,8 @@ impl Encrypt for (SecretKey, PublicKey) {
         }
         let (nonce, msg) = msg.split_at(n);
 
-        let err = || "Nonce is not 24 byte";
-        let nonce = Nonce::from_slice(nonce).ok_or_else(err)?;
+        let err = "Nonce is not 24 byte";
+        let nonce = Nonce::from_slice(nonce).ok_or(err)?;
 
         let err = |_| "Decryption failed!".into();
         box_::open(&msg, &nonce, &public_key, &secret_key).map_err(err)

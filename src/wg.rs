@@ -45,12 +45,13 @@ impl Interface {
     }
 
     pub fn public_key(&self) -> Result<PublicKey> {
-        let process = Command::new("/usr/bin/wg")
+        let process = Command::new("sudo")
+            .arg("/usr/bin/wg")
             .arg("pubkey")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
-            .chain_err(|| "failed to execute /usr/bin/wg")?;
+            .chain_err(|| "failed to execute sudo /usr/bin/wg")?;
 
         let b64_key = base64::encode(&self.secret_key[..]);
 
@@ -107,7 +108,7 @@ impl Peer {
     }
 
     pub fn set_endpoint<'a>(&self, interface: &'a str, addr: SocketAddr) -> Result<()> {
-        let output = Command::new("/usr/bin/sudo")
+        let output = Command::new("sudo")
             .arg("/usr/bin/wg")
             .arg("set")
             .arg(interface)
@@ -116,7 +117,7 @@ impl Peer {
             .arg("endpoint")
             .arg(format!("{}", addr))
             .output()
-            .chain_err(|| "failed to execute /usr/bin/wg")?;
+            .chain_err(|| "failed to execute sudo /usr/bin/wg")?;
 
         if output.status.success() {
             Ok(())
@@ -133,12 +134,12 @@ pub struct WireGuardConfig {
 
 impl WireGuardConfig {
     pub fn new<'a>(interface: &'a str) -> Result<WireGuardConfig> {
-        let output = Command::new("/usr/bin/sudo")
+        let output = Command::new("sudo")
             .arg("/usr/bin/wg")
             .arg("showconf")
             .arg(interface)
             .output()
-            .chain_err(|| "failed to execute /usr/bin/wg")?;
+            .chain_err(|| "failed to execute sudo /usr/bin/wg")?;
 
         if !output.status.success() {
             let msg = String::from_utf8_lossy(&output.stderr);
