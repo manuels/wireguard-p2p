@@ -65,20 +65,22 @@ impl Serialize for (SystemTime, Connectivity) {
         let delta = delta.chain_err(|| "SystemTime is invalid")?;
 
         let (nat_type, addr) = match *c {
-            Connectivity::OpenInternet(addr)      => (1, Some(addr)),
-            Connectivity::FullConeNat(addr)       => (2, Some(addr)),
-            Connectivity::SymmetricNat            => (3, None),
+            Connectivity::OpenInternet(addr) => (1, Some(addr)),
+            Connectivity::FullConeNat(addr) => (2, Some(addr)),
+            Connectivity::SymmetricNat => (3, None),
             Connectivity::RestrictedPortNat(addr) => (4, Some(addr)),
             Connectivity::RestrictedConeNat(addr) => (5, Some(addr)),
             Connectivity::SymmetricFirewall(addr) => (6, Some(addr)),
-            Connectivity::UdpBlocked              => (7, None),
+            Connectivity::UdpBlocked => (7, None),
         };
 
         let err = || "Writing version failed";
         wrt.write_u8(0x02).chain_err(err)?;
 
         let err = || "Writing time failed";
-        wrt.write_u64::<NetworkEndian>(delta.as_secs()).chain_err(err)?;
+        wrt.write_u64::<NetworkEndian>(delta.as_secs()).chain_err(
+            err,
+        )?;
 
         let err = || "Writing NAT type failed";
         wrt.write_u8(nat_type).chain_err(err)?;

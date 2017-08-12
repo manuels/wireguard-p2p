@@ -20,7 +20,8 @@ pub fn search(peer_name: String) -> Result<()> {
     let future = BulletinBoard::get(handle, peer_name.as_bytes());
 
     let future = future.and_then(move |values| {
-        let values:Vec<_> = values.iter()
+        let values: Vec<_> = values
+            .iter()
             .filter(|v| v.len() == 32 + 32)
             .filter_map(|v| {
                 let key = &v[32..];
@@ -28,11 +29,7 @@ pub fn search(peer_name: String) -> Result<()> {
                 let d1 = sha256::Digest::from_slice(&v[..32]);
                 let d2 = Some(sha256::hash(key));
 
-                if d1 == d2 {
-                    Some(key)
-                } else {
-                    None
-                }
+                if d1 == d2 { Some(key) } else { None }
             })
             .collect();
 
@@ -50,7 +47,5 @@ pub fn search(peer_name: String) -> Result<()> {
     });
 
     let err = || "Failed run tokio Core";
-    core.run(future)
-        .chain_err(err)
+    core.run(future).chain_err(err)
 }
-

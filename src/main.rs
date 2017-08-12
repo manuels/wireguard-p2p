@@ -34,12 +34,15 @@ use errors::ResultExt;
 mod wg;
 mod dht;
 mod crypto;
-mod daemon;
 mod search;
 mod publish;
 mod interval;
 mod duplicate;
 mod serialization;
+#[macro_use]
+mod report_errors;
+#[macro_use]
+mod daemon;
 mod bulletinboard;
 
 use std::net::SocketAddr;
@@ -54,7 +57,7 @@ use publish::publish;
 
 type MsgPair = (Vec<u8>, SocketAddr);
 
-type BoxedFuture<T> = Box<Future<Item=T, Error=errors::Error>>;
+type BoxedFuture<T> = Box<Future<Item = T, Error = errors::Error>>;
 
 const USAGE: &'static str = "
 WireGuard Peer-to-Peer Tool
@@ -88,8 +91,8 @@ fn main_() -> errors::Result<()> {
 
     let argv = std::env::args();
     let args = Docopt::new(USAGE)
-                  .and_then(|d| d.argv(argv).parse())
-                  .unwrap_or_else(|e| e.exit());
+        .and_then(|d| d.argv(argv).parse())
+        .unwrap_or_else(|e| e.exit());
 
     if args.get_bool("search") {
         let peer_name = args.get_str("<peer_name>").to_string();
@@ -106,4 +109,3 @@ fn main_() -> errors::Result<()> {
         unreachable!()
     }
 }
-

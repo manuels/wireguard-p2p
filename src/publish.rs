@@ -26,8 +26,12 @@ pub fn publish(interface: String, peer_name: String) -> Result<()> {
     let hash = sha256::hash(&key[..]);
     let value = [&hash[..], &key[..]].concat();
 
-    println!("Publishing public key for interface '{}' ({}...) as '{}'...",
-        interface, &base64::encode(&key[..])[..7], peer_name);
+    println!(
+        "Publishing public key for interface '{}' ({}...) as '{}'...",
+        interface,
+        &base64::encode(&key[..])[..7],
+        peer_name
+    );
 
     let future = BulletinBoard::insert(handle, peer_name.as_bytes(), &value[..]);
 
@@ -42,7 +46,5 @@ pub fn publish(interface: String, peer_name: String) -> Result<()> {
     });
 
     let err = || "Failed run tokio Core";
-    core.run(future)
-        .chain_err(err)
+    core.run(future).chain_err(err)
 }
-

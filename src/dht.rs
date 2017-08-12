@@ -26,33 +26,43 @@ use serialization::Serialize;
 use wg::WireGuardConfig;
 use wg::PublicKey;
 
-pub fn stun_publish(handle: Handle,
-                    sink: Box<Sink<SinkItem=MsgPair, SinkError=Error>>,
-                    stream: Box<Stream<Item=MsgPair, Error=Error>>,
-                    interface: String,
-                    remote_key: PublicKey)
-    -> Box<Future<Item=(Box<Sink<SinkItem=MsgPair, SinkError=Error>>,
-                        Box<Stream<Item=MsgPair, Error=Error>>),
-                  Error=(Box<Sink<SinkItem=MsgPair, SinkError=Error>>,
-                         Box<Stream<Item=MsgPair, Error=Error>>,
-                         Error)>>
-{
+pub fn stun_publish(
+    handle: Handle,
+    sink: Box<Sink<SinkItem = MsgPair, SinkError = Error>>,
+    stream: Box<Stream<Item = MsgPair, Error = Error>>,
+    interface: String,
+    remote_key: PublicKey,
+) -> Box<
+    Future<
+        Item = (Box<Sink<SinkItem = MsgPair, SinkError = Error>>,
+                Box<Stream<Item = MsgPair, Error = Error>>),
+        Error = (Box<Sink<SinkItem = MsgPair, SinkError = Error>>,
+                 Box<Stream<Item = MsgPair, Error = Error>>,
+                 Error),
+    >,
+> {
     let timeout = Duration::from_secs(1);
 
     let err = || "Unable to parse bind address";
     let bind_addr = "0.0.0.0:0".parse().unwrap();
-//    let bind_addr = box_try!("0.0.0.0:0".parse().chain_err(err));
+    //    let bind_addr = box_try!("0.0.0.0:0".parse().chain_err(err));
 
     let err = || "Unable to parse stun server address";
     let server = "192.95.17.62:3478".parse().unwrap(); // stun.callwithus.com
-//    let server = box_try!("192.95.17.62:3478".parse().chain_err(err)); // stun.callwithus.com
+    //    let server = box_try!("192.95.17.62:3478".parse().chain_err(err)); // stun.callwithus.com
 
     // TODO: filter stream for stun messages
     let stream = stream.map_err(|_| io::Error::new(ErrorKind::Other, ""));
     let sink = sink.sink_map_err(|_| io::Error::new(ErrorKind::Other, ""));
 
-    let future = stun3489::stun3489_generic(Box::new(stream), Box::new(sink),
-        bind_addr, server, &handle, timeout);
+    let future = stun3489::stun3489_generic(
+        Box::new(stream),
+        Box::new(sink),
+        bind_addr,
+        server,
+        &handle,
+        timeout,
+    );
 
     let future = future.and_then(|(stream, sink, conn)| {
         info!("{:?} detected.", conn);
@@ -73,7 +83,10 @@ pub fn stun_publish(handle: Handle,
         let key_pair = (interface.secret_key, remote_key);
 
         let err = || "Encoding DHT message failed.";
-        (SystemTime::now(), conn).serialize(&mut wrt).chain_err(err).unwrap();
+        (SystemTime::now(), conn)
+            .serialize(&mut wrt)
+            .chain_err(err)
+            .unwrap();
 
         remote.spawn(move |handle: &Handle| {
             let key = [&local_key[..], &remote_key[..]].concat();
@@ -85,23 +98,33 @@ pub fn stun_publish(handle: Handle,
         ok((sink, stream))
     });
 
-    Box::new(future.map_err(|(stream, sink, e)| {
-        (Box::new(sink.sink_map_err(|e| Error::with_chain(e, ""))) as Box<Sink<SinkItem=MsgPair, SinkError=Error>>,
-         Box::new(stream.map_err(|e| Error::with_chain(e, ""))) as Box<Stream<Item=MsgPair, Error=Error>>,
-         Error::with_chain(e, "")
-         )
-    }).map(|(sink, stream)| {
-        (Box::new(sink.sink_map_err(|e| Error::with_chain(e, ""))) as Box<Sink<SinkItem=MsgPair, SinkError=Error>>,
-         Box::new(stream.map_err(|e| Error::with_chain(e, ""))) as Box<Stream<Item=MsgPair, Error=Error>>,
-         )
-    }))
+    Box::new(
+        future
+            .map_err(|(stream, sink, e)| {
+                (
+                    Box::new(sink.sink_map_err(|e| Error::with_chain(e, ""))) as
+                        Box<Sink<SinkItem = MsgPair, SinkError = Error>>,
+                    Box::new(stream.map_err(|e| Error::with_chain(e, ""))) as
+                        Box<Stream<Item = MsgPair, Error = Error>>,
+                    Error::with_chain(e, ""),
+                )
+            })
+            .map(|(sink, stream)| {
+                (
+                    Box::new(sink.sink_map_err(|e| Error::with_chain(e, ""))) as
+                        Box<Sink<SinkItem = MsgPair, SinkError = Error>>,
+                    Box::new(stream.map_err(|e| Error::with_chain(e, ""))) as
+                        Box<Stream<Item = MsgPair, Error = Error>>,
+                )
+            }),
+    )
 }
 
-pub fn dht_get(handle: Handle,
-               interface: &str,
-               remote_key: PublicKey)
-    -> Result<BoxedFuture<Option<Connectivity>>>
-{
+pub fn dht_get(
+    handle: Handle,
+    interface: &str,
+    remote_key: PublicKey,
+) -> Result<BoxedFuture<Option<Connectivity>>> {
     let err = || "Reading WireGuard config failed.";
     let cfg = WireGuardConfig::new(&interface[..]).chain_err(err)?;
     let iface = cfg.interface;
