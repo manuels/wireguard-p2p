@@ -2,19 +2,19 @@ use futures::Future;
 use futures::Stream;
 use futures::Sink;
 use futures::future::result;
+use futures::sync::mpsc::channel;
 use futures::sync::mpsc::Receiver;
 use futures::sync::mpsc::Sender;
-use futures::sync::mpsc::channel;
+
+use MsgPair;
+
+use errors::Error;
 
 use tokio_core::reactor::Handle;
 
-use errors::Error;
-use errors::ResultExt;
-
-pub fn duplicate_stream<S, I>(handle: &Handle, stream: S) -> (Receiver<I>, Receiver<I>)
+pub fn duplicate_stream<S>(handle: &Handle, stream: S) -> (Receiver<MsgPair>, Receiver<MsgPair>)
 where
-    S: 'static + Stream<Item = I, Error = Error>,
-    I: 'static + Send + Clone,
+    S: 'static + Stream<Item = MsgPair, Error = Error>
 {
     let (mut tx1, rx1) = channel(10);
     let (mut tx2, rx2) = channel(10);
@@ -22,22 +22,16 @@ where
     let future = stream.for_each(move |item| {
         // UDP => AsyncSink::NotReady is ignored in this function
 
-        let err = || "start_send to tx1 failed";
-        let res11 = tx1.start_send(item.clone()).chain_err(err);
+        let res11 = tx1.start_send(item.clone());
+        let res21 = tx2.start_send(item);
+        let res12 = tx1.poll_complete();
+        let res22 = tx2.poll_complete();
 
-        let err = || "start_send to tx2 failed";
-        let res21 = tx2.start_send(item.clone()).chain_err(err);
-
-        let err = || "poll_complete() to tx1 failed";
-        let res12 = tx1.poll_complete().chain_err(err);
-
-        let err = || "poll_complete() to tx2 failed";
-        let res22 = tx2.poll_complete().chain_err(err);
-
-        result(res11.and(res21).and(res12).and(res22).and(Ok(())))
+        result(res11.and(res21).and(res12).and(res22)
+                    .and(Ok(())).map_err(|e| e.into()))
     });
 
-    let future = future.map(|_| ()).map_err(|_| ());
+    let future = future.map_err(|_| ());
     handle.spawn(future);
 
     (rx1, rx2)
@@ -82,7 +76,7 @@ fn test_duplicate_stream() {
         ok(())
     });
 
-    let f = tx.send(42);
+    let f = tx.send((vec![], ([0,0,0,0], 0).into()));
     core.handle().spawn(f.map(|_| ()).map_err(|_| ()));
 
     core.run(f2.join(f3)).unwrap();

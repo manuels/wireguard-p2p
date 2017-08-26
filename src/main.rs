@@ -1,13 +1,7 @@
+#![feature(proc_macro, conservative_impl_trait, generators)]
 #![recursion_limit = "1024"]
 
-macro_rules! box_try {
-    ($e:expr) => (match $e {
-        Ok(t) => t,
-        Err(e) => return Box::new(::futures::future::err(e.into())),
-    })
-}
-
-extern crate futures;
+extern crate futures_await as futures;
 extern crate tokio_core;
 extern crate docopt;
 
@@ -26,7 +20,19 @@ extern crate base64;
 extern crate error_chain;
 
 mod errors {
-    error_chain!{}
+    error_chain!{
+        foreign_links {
+            Fmt(::std::fmt::Error);
+            Io(::std::io::Error);
+            Base64(::base64::DecodeError);
+            ParseInt(::std::num::ParseIntError);
+            ParseAddr(::std::net::AddrParseError);
+            Ini(::ini::ini::Error);
+            SystemTime(::std::time::SystemTimeError);
+            DBus(::dbus::Error);
+            Send(::futures::sync::mpsc::SendError<::MsgPair>);
+        }
+    }
 }
 
 use errors::ResultExt;
@@ -36,28 +42,23 @@ mod dht;
 mod crypto;
 mod search;
 mod publish;
-mod interval;
 mod duplicate;
 mod serialization;
-#[macro_use]
-mod report_errors;
 #[macro_use]
 mod daemon;
 mod bulletinboard;
 
 use std::net::SocketAddr;
 
-use futures::Future;
-
 use docopt::Docopt;
+
+use tokio_core::reactor::Core;
 
 use daemon::daemon;
 use search::search;
 use publish::publish;
 
 type MsgPair = (Vec<u8>, SocketAddr);
-
-type BoxedFuture<T> = Box<Future<Item = T, Error = errors::Error>>;
 
 const USAGE: &'static str = "
 WireGuard Peer-to-Peer Tool
@@ -70,23 +71,9 @@ Options:
     -c, --config=<path>  Path to config file [default: /etc/wireguard-p2p.conf].
 ";
 
-fn main() {
-    if let Err(ref e) = main_() {
-        println!("error: {}", e);
+quick_main!(run);
 
-        for e in e.iter().skip(1) {
-            println!("caused by: {}", e);
-        }
-
-        if let Some(backtrace) = e.backtrace() {
-            println!("backtrace: {:?}", backtrace);
-        }
-
-        ::std::process::exit(1);
-    }
-}
-
-fn main_() -> errors::Result<()> {
+fn run() -> errors::Result<()> {
     env_logger::init().chain_err(|| "Failed to init env_logger")?;
 
     let argv = std::env::args();
@@ -95,13 +82,20 @@ fn main_() -> errors::Result<()> {
         .unwrap_or_else(|e| e.exit());
 
     if args.get_bool("search") {
+        let mut core = Core::new()?;
+        let handle = core.handle();
+
         let peer_name = args.get_str("<peer_name>").to_string();
-        search(peer_name)
+
+        core.run(search(handle, peer_name))
     } else if args.get_bool("publish") {
+        let mut core = Core::new()?;
+        let handle = core.handle();
+
         let interface = args.get_str("<interface>").to_string();
         let peer_name = args.get_str("<peer_name>").to_string();
 
-        publish(interface, peer_name)
+        core.run(publish(handle, interface, peer_name))
     } else if args.get_bool("daemon") {
         let conf_path = args.get_str("--config").to_string();
         daemon(conf_path)

@@ -1,9 +1,9 @@
+use std::collections::HashMap;
+use std::io::Read;
+use std::io::Write;
+use std::net::SocketAddr;
 use std::process::Stdio;
 use std::process::Command;
-use std::net::SocketAddr;
-use std::io::Write;
-use std::io::Read;
-use std::collections::HashMap;
 use std::iter::FromIterator;
 
 use base64;
@@ -14,163 +14,90 @@ use ini::ini::Properties;
 pub use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::SecretKey;
 pub use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::PublicKey;
 
-use errors::*;
-
-pub struct Interface {
-    pub secret_key: SecretKey,
-    pub listen_port: u16,
-}
-
-impl Interface {
-    fn parse(props: &Properties) -> Result<Interface> {
-        let err = || "[Interface] section contains no 'PrivateKey'";
-        let secret_key = props.get("PrivateKey").ok_or_else(err)?;
-
-        let err = || "PrivateKey is not valid base64";
-        let secret_key = base64::decode(secret_key).chain_err(err)?;
-
-        let err = || "Invalid PrivateKey value";
-        let secret_key = SecretKey::from_slice(&secret_key[..32]).ok_or_else(err)?;
-
-        let err = || "[Interface] section contains no 'ListenPort'";
-        let listen_port = props.get("ListenPort").ok_or_else(err)?;
-
-        let err = || "ListenPort is invalid";
-        let listen_port = listen_port.parse::<u16>().chain_err(err)?;
-
-        Ok(Interface {
-            secret_key,
-            listen_port,
-        })
-    }
-
-    pub fn public_key(&self) -> Result<PublicKey> {
-        let process = Command::new("sudo")
-            .arg("/usr/bin/wg")
-            .arg("pubkey")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .chain_err(|| "failed to execute sudo /usr/bin/wg")?;
-
-        let b64_key = base64::encode(&self.secret_key[..]);
-
-        let err = || "wg: Failed to open stdin";
-        let mut stdin = process.stdin.ok_or_else(err)?;
-
-        let err = || "Error writing to stdin";
-        stdin.write_all(b64_key.as_bytes()).chain_err(err)?;
-        drop(stdin);
-
-        let err = || "wg: Failed to open stdout";
-        let mut stdout = process.stdout.ok_or_else(err)?;
-
-        let mut s = String::new();
-        let err = || "wg: Reading stdout failed";
-        stdout.read_to_string(&mut s).chain_err(err)?;
-
-        let err = || "Base64-decoding public key failed!";
-        let pubkey = base64::decode(&s.trim()[..]).chain_err(err)?;
-
-        let err = || "Decoding public key failed!";
-        let pubkey = PublicKey::from_slice(&pubkey[..32]).ok_or_else(err)?;
-
-        Ok(pubkey)
-    }
-}
+use errors::Result;
 
 pub struct Peer {
     public_key: PublicKey,
+    interface: String,
     pub endpoint: Option<SocketAddr>,
 }
 
 impl Peer {
-    fn parse(props: &Properties) -> Result<Peer> {
+    fn parse(interface: String, props: &Properties) -> Result<Peer> {
         let err = || "[Peer] section contains no 'PublicKey'";
         let public_key = props.get("PublicKey").ok_or_else(err)?;
 
-        let err = || "PublicKey is not valid base64";
-        let public_key = base64::decode(public_key).chain_err(err)?;
+        let public_key = base64::decode(public_key)?;
 
         let err = || "Invalid PublicKey value";
         let public_key = PublicKey::from_slice(&public_key[..32]).ok_or_else(err)?;
 
         let endpoint = if let Some(s) = props.get("Endpoint") {
-            Some(s.parse().chain_err(|| "Invalid address")?)
+            Some(s.parse()?)
         } else {
             None
         };
 
         Ok(Peer {
             public_key,
-            endpoint: endpoint,
+            interface,
+            endpoint,
         })
     }
 
-    pub fn set_endpoint<'a>(&self, interface: &'a str, addr: SocketAddr) -> Result<()> {
+    pub fn set_endpoint(&self, addr: SocketAddr) -> Result<()> {
         let output = Command::new("sudo")
             .arg("/usr/bin/wg")
             .arg("set")
-            .arg(interface)
+            .arg(&self.interface)
             .arg("peer")
             .arg(base64::encode(&self.public_key[..]))
             .arg("endpoint")
             .arg(format!("{}", addr))
-            .output()
-            .chain_err(|| "failed to execute sudo /usr/bin/wg")?;
+            .output()?;
 
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err("Failed to set enpoint".into())
-        }
+        ensure!(output.status.success(), "Failed to set enpoint");
+
+        Ok(())
     }
 }
 
 pub struct WireGuardConfig {
-    pub interface: Interface,
+    pub secret_key: SecretKey,
+    pub listen_port: u16,
     pub peers: HashMap<PublicKey, Peer>,
 }
 
 impl WireGuardConfig {
-    pub fn new<'a>(interface: &'a str) -> Result<WireGuardConfig> {
+    pub fn new(interface: &str) -> Result<WireGuardConfig> {
         let output = Command::new("sudo")
             .arg("/usr/bin/wg")
             .arg("showconf")
             .arg(interface)
-            .output()
-            .chain_err(|| "failed to execute sudo /usr/bin/wg")?;
+            .output()?;
 
-        if !output.status.success() {
-            let msg = String::from_utf8_lossy(&output.stderr);
-            let msg = format!("/usr/bin/wg returned a failure: {:?}", msg);
-            return Err(msg.into());
-        }
+        let msg = String::from_utf8_lossy(&output.stderr);
+        ensure!(output.status.success(), "/usr/bin/wg failed: {}", msg);
 
         let ini = String::from_utf8_lossy(&output.stdout);
-        Self::parse(ini.into())
+        Self::parse(interface, ini.into())
     }
 
-    fn parse(s: String) -> Result<WireGuardConfig> {
+    fn parse(iface: &str, s: String) -> Result<WireGuardConfig> {
         let mut interface = None;
         let mut peer_list = Vec::new();
+        let mut peer_hdr = Some("Peer");
 
-        for (i, txt) in s.split("[Peer]").enumerate() {
-            let ini = if i == 0 {
-                txt.to_string()
-            } else {
-                format!("[Peer]{}", txt)
-            };
-
-            let ini = Ini::load_from_str(&ini[..]);
-            let ini = ini.chain_err(|| "Parsing INI failed")?;
+        for txt in s.split("[Peer]") {
+            let ini = Ini::load_from_str(&txt[..])?;
 
             if let Some(sect) = ini.section(Some("Interface")) {
-                interface = Some(Interface::parse(sect)?);
+                interface = Some(Self::parse_interface(sect)?);
             }
 
-            if let Some(sect) = ini.section(Some("Peer")) {
-                peer_list.push(Peer::parse(sect)?);
+            if let Some(sect) = ini.section(peer_hdr.take()) {
+                let iface = iface.to_string();
+                peer_list.push(Peer::parse(iface, sect)?);
             }
         }
 
@@ -181,9 +108,56 @@ impl WireGuardConfig {
         let interface = interface.ok_or_else(err)?;
 
         Ok(WireGuardConfig {
-            interface: interface,
+            secret_key: interface.0,
+            listen_port: interface.1,
             peers: peer_list,
         })
+    }
+
+    fn parse_interface(props: &Properties) -> Result<(SecretKey, u16)> {
+        let err = || "[Interface] section contains no 'PrivateKey'";
+        let secret_key = props.get("PrivateKey").ok_or_else(err)?;
+
+        let secret_key = base64::decode(secret_key)?;
+
+        let err = || "Invalid PrivateKey value";
+        let secret_key = SecretKey::from_slice(&secret_key).ok_or_else(err)?;
+
+        let err = || "[Interface] section contains no 'ListenPort'";
+        let listen_port = props.get("ListenPort").ok_or_else(err)?;
+        let listen_port = listen_port.parse::<u16>()?;
+
+        Ok((secret_key, listen_port))
+    }
+
+    pub fn public_key(&self) -> Result<PublicKey> {
+        let process = Command::new("sudo")
+            .arg("/usr/bin/wg")
+            .arg("pubkey")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?;
+
+        let b64_key = base64::encode(&self.secret_key[..]);
+
+        let err = || "wg: Failed to open stdin";
+        let mut stdin = process.stdin.ok_or_else(err)?;
+
+        stdin.write_all(b64_key.as_bytes())?;
+        drop(stdin);
+
+        let err = || "wg: Failed to open stdout";
+        let mut stdout = process.stdout.ok_or_else(err)?;
+
+        let mut buf = [0; 44];
+        stdout.read_exact(&mut buf)?;
+
+        let pubkey = base64::decode(&buf[..])?;
+
+        let err = || "Decoding public key failed!";
+        let pubkey = PublicKey::from_slice(&pubkey[..32]).ok_or_else(err)?;
+
+        Ok(pubkey)
     }
 }
 
@@ -199,9 +173,15 @@ PersistentKeepalive = 60
 PublicKey = zFGMqsiDRLI4tNhCfbn4O80ATfruc9iQ9nwJnPlW8jQ=
 AllowedIPs = 10.0.0.0/24
 Endpoint = 127.0.0.1:8123
+
+[Peer]
+PersistentKeepalive = 60
+PublicKey = uAyF0vu7AvEW8IAc4FjG4NhoOoGhlqGu5iLzIcM332U=
+AllowedIPs = 10.0.0.0/24
+Endpoint = 127.0.0.1:8124
 ";
 
-    let cfg = WireGuardConfig::parse(ini.to_string()).unwrap();
-    assert!(cfg.interface.listen_port > 0);
-    assert_eq!(cfg.peers.len(), 1);
+    let cfg = WireGuardConfig::parse("wg0", ini.to_string()).unwrap();
+    assert!(cfg.listen_port != 0);
+    assert_eq!(cfg.peers.len(), 2);
 }

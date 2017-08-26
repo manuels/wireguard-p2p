@@ -1,28 +1,27 @@
-use std::ops::DerefMut;
 use std::io;
+use std::rc::Rc;
 use std::net::SocketAddr;
+use std::net::Ipv4Addr;
+use std::io::ErrorKind;
 use std::time::Duration;
+use std::time::Instant;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::sync::Arc;
 
 use base64;
 
 use ini::Ini;
 
-use futures::Stream;
+use futures::prelude::*;
 use futures::Sink;
+use futures::Stream;
 use futures::Future;
-use futures::future::ok;
-use futures::future::err;
-use futures::future::result;
 use futures::stream::SplitSink;
-use futures::sync::mpsc::Receiver;
 use futures::sync::mpsc::Sender;
 
 use tokio_core::reactor::Core;
 use tokio_core::reactor::Handle;
-use tokio_core::reactor::Timeout;
+use tokio_core::reactor::Interval;
 use tokio_core::net::UdpSocket;
 use tokio_core::net::UdpCodec;
 use tokio_core::net::UdpFramed;
@@ -32,7 +31,6 @@ use duplicate::duplicate_sink;
 
 use MsgPair;
 use dht;
-use interval::Interval;
 use wg::WireGuardConfig;
 use wg::PublicKey;
 
@@ -48,7 +46,7 @@ impl UdpCodec for RawCodec {
 
     fn decode(&mut self, src: &SocketAddr, buf: &[u8]) -> io::Result<Self::In> {
         debug!("IN  len={} src={:?}", buf.len(), src);
-        Ok((buf.to_vec(), src.clone()))
+        Ok((buf.to_vec(), *src))
     }
 
     fn encode(&mut self, msg: Self::Out, buf: &mut Vec<u8>) -> SocketAddr {
@@ -60,135 +58,130 @@ impl UdpCodec for RawCodec {
     }
 }
 
-fn get_local_sink<'a, 'b>(
-    handle: &'a Handle,
-    sinks: &'b mut HashMap<SocketAddr, (SplitSink<UdpFramed<RawCodec>>, SocketAddr)>,
-    public_sink: Sender<MsgPair>,
-    remote_addr: SocketAddr,
-) -> Result<&'b mut (SplitSink<UdpFramed<RawCodec>>, SocketAddr)> {
-    let local_addr_mask = "127.0.0.1:0".parse().unwrap();
+type PeerSink = SplitSink<UdpFramed<RawCodec>>;
 
-    if !sinks.contains_key(&remote_addr) {
+struct ProxyConnections {
+    wg_addr: SocketAddr,
+    sinks: HashMap<SocketAddr, (PeerSink, SocketAddr)>,
+    handle: Handle,
+    public_sink: Sender<MsgPair>,
+}
+
+impl ProxyConnections {
+    fn new(handle: Handle, public_sink: Sender<MsgPair>, wg_addr: SocketAddr)
+        -> ProxyConnections
+    {
+        ProxyConnections {
+            handle,
+            public_sink,
+            wg_addr,
+            sinks: HashMap::new(),
+        }
+    }
+
+    pub fn get_local_addr(&mut self, remote_addr: SocketAddr) -> SocketAddr {
+        let &mut (_, ref local_addr) = self.get_entry(remote_addr);
+
+        *local_addr
+    }
+
+    fn get_local_sink(&mut self, remote_addr: SocketAddr) -> &mut PeerSink {
+        let &mut (ref mut sink, _) = self.get_entry(remote_addr);
+
+        sink
+    }
+
+    fn new_connection(handle: &Handle,
+                      public_sink: Sender<MsgPair>,
+                      remote_addr: SocketAddr)
+        -> (PeerSink, SocketAddr)
+    {
         debug!("New connection from {}.", remote_addr);
 
         let ((local_sink, local_stream), local_addr) = {
-            let msg = format!("Unable to bind UDP socket {}", local_addr_mask);
-            let local_sock = UdpSocket::bind(&local_addr_mask, handle).expect(&msg);
+            let local_addr_mask = ([127,0,0,1], 0).into();
+            let msg = "Unable to bind to a UDP socket on localhost";
+            let local_sock = UdpSocket::bind(&local_addr_mask, handle).expect(msg);
             let local_addr = local_sock.local_addr().unwrap();
 
             debug!("Adding new proxy for {:?}: {:?}", remote_addr, local_addr);
             (local_sock.framed(RawCodec).split(), local_addr)
         };
 
-        let dst = remote_addr.clone();
-        let send_to_public = local_stream.map(move |(buf, _)| {
-            debug!("len={} dst={}", buf.len(), dst);
-            (buf, dst)
+        let redirect_to_public = local_stream.map(move |(buf, _)| {
+            debug!("len={} dst={}", buf.len(), remote_addr);
+            (buf, remote_addr)
         });
 
         handle.spawn(
-            send_to_public
+            redirect_to_public
                 .map_err(|_| ())
                 .forward(public_sink.sink_map_err(|_| ()))
                 .map(|_| ()),
         );
 
-        sinks.insert(remote_addr, (local_sink, local_addr));
+        (local_sink, local_addr)
     }
 
-    let err = "Did not to find sink".into();
-    sinks.get_mut(&remote_addr).ok_or(err)
+    fn get_entry(&mut self, remote_addr: SocketAddr) -> &mut (PeerSink, SocketAddr) {
+        let handle = &self.handle;
+        let public_sink = self.public_sink.clone();
+
+        let create_connection = || Self::new_connection(handle, public_sink, remote_addr);
+
+        let entry = self.sinks.entry(remote_addr);
+        entry.or_insert_with(create_connection)
+    }
+
+    pub fn forward(&mut self,
+                   msg: Vec<u8>,
+                   remote_addr: SocketAddr)
+        -> Result<()>
+    {
+        let wg_addr = self.wg_addr;
+        debug!("forwardig to {:?}", wg_addr);
+
+        let sink = &mut *self.get_local_sink(remote_addr);
+        sink.start_send((msg, wg_addr))?;
+        sink.poll_complete()?;
+
+        Ok(())
+    }
 }
 
-fn wireguard_dispatch(
-    sinks: Arc<Mutex<HashMap<SocketAddr, (SplitSink<UdpFramed<RawCodec>>, SocketAddr)>>>,
-    public_sink: Sender<MsgPair>,
-    public_stream: Receiver<MsgPair>,
-    handle: Handle,
-    wg_addr: SocketAddr,
-) -> Box<Future<Item = (), Error = ()>> {
-    let future = public_stream.for_each((move |(buf, remote_addr)| report_errors!({
-        let public_sink = public_sink.clone();
-        debug!("public stream: src {:?}", remote_addr);
+#[async]
+fn update_endpoint(handle: Handle, proxies: Rc<Mutex<ProxyConnections>>,
+                   interface: String, remote_key: PublicKey)
+    -> Result<()>
+{
+    let repeat = Interval::new_at(Instant::now(), Duration::from_secs(60), &handle)?;
 
-        let mut sinks = sinks.lock().unwrap();
-        let res = get_local_sink(&handle, sinks.deref_mut(), public_sink, remote_addr);
-        let &mut (ref mut local_sink, _) = box_try!(res);
+    #[async]
+    for _ in repeat {
+        let cfg = WireGuardConfig::new(&interface[..])?;
 
-        debug!("dispatching to {:?}", wg_addr);
+        let local_key = cfg.public_key()?;
+        let secret_key = cfg.secret_key;
 
-        let err = || "Failed to dispatch to WireGuard address";
-        let res = local_sink.start_send((buf, wg_addr));
-        box_try!(res.chain_err(err));
+        let conn = await!(dht::dht_get(handle.clone(), secret_key, local_key, remote_key))?;
+        info!("Remote connectivity: {:?}", conn);
 
-        let err = || "Failed to dispatch to WireGuard address";
-        let res = local_sink.poll_complete();
-        box_try!(res.chain_err(err));
+        if let Some(remote_addr) = conn.and_then(|c| c.into()) {
+            let local_addr = proxies.lock().unwrap().get_local_addr(remote_addr);
 
-        Box::new(result(Ok(()) as Result<_>))
-    })));
+            let peer = &cfg.peers[&remote_key];
+            peer.set_endpoint(local_addr)?;
+        }
+    }
 
-    Box::new(future)
-}
-
-fn update_endpoint(
-    handle: Handle,
-    interface: String,
-    remote_key: PublicKey,
-    public_sink: Sender<MsgPair>,
-    sinks: Arc<Mutex<HashMap<SocketAddr, (SplitSink<UdpFramed<RawCodec>>, SocketAddr)>>>,
-) -> Box<Future<Item = (), Error = ()>> {
-    let res = dht::dht_get(handle.clone(), &interface[..], remote_key);
-
-    debug!("Getting remote connectivity...");
-    let iface = interface.clone();
-    let future = if let Ok(future) = res {
-        info!("Remote future...");
-        let handle = handle.clone();
-        let public_sink = public_sink.clone();
-        let sinks = sinks.clone();
-
-        Box::new(
-            future
-                .or_else(|e| {
-                    warn!("err={:?}", e);
-                    err(e)
-                })
-                .map_err(|_| ())
-                .and_then(move |conn| {
-                    info!("Remote connectivity: {:?}", conn);
-                    let mut cfg = WireGuardConfig::new(&iface[..]).unwrap();
-
-                    let peer = cfg.peers.remove(&remote_key).unwrap();
-                    if let Some(addr) = conn.and_then(|c| c.into()) {
-                        let mut sinks = sinks.lock().unwrap();
-
-                        let &mut (_, local_addr) = get_local_sink(&handle, &mut sinks, public_sink, addr).unwrap();
-                        peer.set_endpoint(&iface[..], local_addr).unwrap();
-                    }
-
-                    ok(())
-                }),
-        ) as Box<Future<Item = (), Error = ()>>
-    } else {
-        info!("Remote connectivity not found.");
-        Box::new(ok(())) as Box<Future<Item = (), Error = ()>>
-    };
-
-    let timeout = Timeout::new(Duration::from_secs(1 * 60), &handle).unwrap();
-    Box::new(future.then(|_| timeout).then(move |_| {
-        info!("respawn...");
-        update_endpoint(handle.clone(), interface, remote_key, public_sink, sinks);
-        ok(())
-    }))
+    Ok(())
 }
 
 pub fn daemon(conf_path: String) -> Result<()> {
-    let msg = || "Failed to read config file";
-    let ini = Ini::load_from_file(conf_path).chain_err(msg)?;
+    let ini = Ini::load_from_file(conf_path)?;
 
     let msg = "INI file has no sections";
-    let mut section_iter = ini.iter().filter(|&(ref k, _)| k.is_some());
+    let mut section_iter = ini.iter().filter(|&(k, _)| k.is_some());
     let (interface, section) = section_iter.next().ok_or(msg)?;
 
     let msg = "INI file has no section";
@@ -196,30 +189,16 @@ pub fn daemon(conf_path: String) -> Result<()> {
 
     let msg = "INI section has no Peer1";
     let remote_key = section.get("Peer1").ok_or(msg)?;
-    let remote_key = base64::decode(remote_key).unwrap();
+    let remote_key = base64::decode(remote_key)?;
 
     let msg = "Failed to read public key";
     let remote_key = PublicKey::from_slice(&remote_key[..]).ok_or(msg)?;
 
-    let msg = || "Failed to bind to parse public address";
-    let public_addr = "0.0.0.0:0".parse().chain_err(msg)?;
-
-    let msg = || "Failed to parse WireGuard configuration";
-    let cfg = WireGuardConfig::new(&interface[..]).chain_err(msg)?;
-
-    let msg = || "Failed to parse WireGuard address";
-    let wg_addr: SocketAddr = format!("127.0.0.1:{}", cfg.interface.listen_port)
-        .parse()
-        .chain_err(msg)?;
-
-    let msg = || "Failed to create tokio Core";
-    let mut core = Core::new().chain_err(msg)?;
+    let mut core = Core::new()?;
     let handle = core.handle();
 
-    let sinks = Arc::new(Mutex::new(HashMap::new()));
-
-    let msg = || "Failed to bind to public address";
-    let public_socket = UdpSocket::bind(&public_addr, &handle).chain_err(msg)?;
+    let public_addr = ([0,0,0,0], 0).into();
+    let public_socket = UdpSocket::bind(&public_addr, &handle)?;
     let (public_sink, public_stream) = public_socket.framed(RawCodec).split();
 
     let public_sink = public_sink.sink_map_err(|_| ());
@@ -228,41 +207,39 @@ pub fn daemon(conf_path: String) -> Result<()> {
     let public_stream = public_stream.then(|e| e.chain_err(|| "public_stream failed"));
     let (public_stream1, public_stream2) = duplicate_stream(&handle, public_stream);
 
-    let public_stream1 = public_stream1.map_err(|e| "Stream failed".into());
-    let public_sink1 = public_sink.clone().sink_map_err(|e| "Stream failed".into());
+    let public_sink1 = public_sink.clone().sink_map_err(|_| io::Error::new(ErrorKind::Other, ""));
+    let public_stream1 = public_stream1.map_err(|_| io::Error::new(ErrorKind::Other, ""));
 
-    let interval = Interval::new(handle.clone(), Duration::from_secs(5 * 60));
     let iface = interface.clone();
-    let f = interval.run(
-        Box::new(public_sink1),
-        Box::new(public_stream1),
-        move |handle, public_sink, public_stream| {
-            let future = dht::stun_publish(
-                handle.clone(),
-                public_sink,
-                public_stream,
-                iface.to_string(),
-                remote_key,
-            );
-            future.then(|res| match res {
-                Ok((sink, stream)) => ok((sink, stream)),
-                Err((sink, stream, e)) => err((sink, stream, e)),
-            })
-        },
+    let future = dht::stun_publish(
+            handle.clone(),
+            Box::new(public_sink1),
+            Box::new(public_stream1),
+            iface.to_string(),
+            remote_key,
     );
-    handle.spawn(f.map_err(|_| ()));
+    handle.spawn(future.map_err(|_| ()));
 
-    handle.spawn(update_endpoint(
+    let localhost: Ipv4Addr = [127,0,0,1].into();
+
+    let cfg = WireGuardConfig::new(&interface).unwrap();
+    let wg_addr = cfg.listen_port;
+
+    let proxies = Rc::new(Mutex::new(ProxyConnections::new(
         handle.clone(),
-        interface.to_string(),
-        remote_key.clone(),
-        public_sink.clone(),
-        sinks.clone(),
-    ));
+        public_sink,
+        (localhost, wg_addr).into(),
+    )));
 
-    let future = wireguard_dispatch(sinks, public_sink, public_stream2, handle, wg_addr);
+    let future = update_endpoint(handle.clone(), proxies.clone(),
+            interface, remote_key);
+    handle.spawn(future.map_err(|_| ()));
+
+    let future = public_stream2.for_each(|(buf, remote_addr)| {
+        proxies.lock().unwrap().forward(buf, remote_addr).map_err(|_| ())
+    });
     let future = future.map_err(|_| Error::from_kind("wireguard_dispatch failed".into()));
 
-    let err = || "Failed run tokio Core";
-    core.run(future).chain_err(err)
+    core.run(future)
 }
+

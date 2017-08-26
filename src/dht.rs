@@ -1,156 +1,113 @@
-use std::io;
 use std::io::Cursor;
-use std::io::ErrorKind;
+use std::io::Error;
 use std::time::Duration;
 use std::time::SystemTime;
 
+use futures::prelude::*;
 use futures::Stream;
 use futures::Sink;
-use futures::Future;
-use futures::future::ok;
 
 use tokio_core::reactor::Handle;
+use tokio_core::reactor::Timeout;
 
 use stun3489;
 use stun3489::Connectivity;
 
-use errors::*;
-use errors::Error;
+use sodiumoxide::crypto::box_::SecretKey;
 
 use MsgPair;
 use bulletinboard::BulletinBoard;
 
-use BoxedFuture;
-use crypto::Encrypt;
+use errors::Result;
+use crypto::Crypto;
 use serialization::Serialize;
 use wg::WireGuardConfig;
 use wg::PublicKey;
 
+#[async]
+pub fn dht_get(handle: Handle,
+               secret_key: SecretKey,
+               local_key: PublicKey,
+               remote_key: PublicKey)
+    -> Result<Option<Connectivity>>
+{
+    let key_pair = (secret_key, remote_key);
+
+    let key = [&remote_key[..], &local_key[..]].concat();
+    let value_list = await!(BulletinBoard::get(handle, key))?;
+
+    info!("Found {} potential remote credentials", value_list.len());
+    let value_list = value_list.into_iter().filter_map(|v| {
+        if let Ok(v) = key_pair.decrypt(&v[..]) {
+            Serialize::deserialize(&mut Cursor::new(v)).ok()
+        } else {
+            None
+        }
+    });
+
+    let mut conn_list: Vec<(SystemTime, Connectivity)>;
+    conn_list = value_list.collect();
+    conn_list.sort_by(|a, b| a.0.cmp(&b.0).reverse());
+
+    let mut conn_list = conn_list.into_iter().map(|t| t.1);
+    let v = conn_list.next();
+    Ok(v)
+}
+
+#[async]
 pub fn stun_publish(
     handle: Handle,
     sink: Box<Sink<SinkItem = MsgPair, SinkError = Error>>,
     stream: Box<Stream<Item = MsgPair, Error = Error>>,
     interface: String,
     remote_key: PublicKey,
-) -> Box<
-    Future<
-        Item = (Box<Sink<SinkItem = MsgPair, SinkError = Error>>,
-                Box<Stream<Item = MsgPair, Error = Error>>),
-        Error = (Box<Sink<SinkItem = MsgPair, SinkError = Error>>,
-                 Box<Stream<Item = MsgPair, Error = Error>>,
-                 Error),
-    >,
-> {
+) -> Result<()>
+{
     let timeout = Duration::from_secs(1);
+    let bind_addr = ([0,0,0,0], 0).into();
+    let server = ([192,95,17,62], 3478).into(); // stun.callwithus.com
 
-    let err = || "Unable to parse bind address";
-    let bind_addr = "0.0.0.0:0".parse().unwrap();
-    //    let bind_addr = box_try!("0.0.0.0:0".parse().chain_err(err));
+    let mut res = await!(stun3489::stun3489_generic(
+            sink,
+            stream,
+            bind_addr,
+            server,
+            handle.clone(),
+            timeout,
+        ));
 
-    let err = || "Unable to parse stun server address";
-    let server = "192.95.17.62:3478".parse().unwrap(); // stun.callwithus.com
-    //    let server = box_try!("192.95.17.62:3478".parse().chain_err(err)); // stun.callwithus.com
+    loop {
+        let (sink, stream, conn) = match res {
+            Ok((sink, stream, conn)) => (sink, stream, Some(conn)),
+            Err((sink, stream, _)) => (sink, stream, None),
+        };
 
-    // TODO: filter stream for stun messages
-    let stream = stream.map_err(|_| io::Error::new(ErrorKind::Other, ""));
-    let sink = sink.sink_map_err(|_| io::Error::new(ErrorKind::Other, ""));
+        if let Some(conn) = conn {
+            info!("{:?} detected.", conn);
 
-    let future = stun3489::stun3489_generic(
-        Box::new(stream),
-        Box::new(sink),
-        bind_addr,
-        server,
-        &handle,
-        timeout,
-    );
+            let cfg = WireGuardConfig::new(&interface[..]).unwrap();
+            let local_key = cfg.public_key().unwrap();
+            let key_pair = (cfg.secret_key, remote_key);
 
-    let future = future.and_then(|(stream, sink, conn)| {
-        info!("{:?} detected.", conn);
-        ok((sink, stream, conn))
-    });
+            let mut wrt = vec![];
+            (SystemTime::now(), conn).serialize(&mut wrt).unwrap();
 
-    let future = future.and_then(move |(sink, stream, conn)| {
-        let remote = handle.remote();
-        let mut wrt = vec![];
-
-        let err = || "Reading WireGuard config failed.";
-        let cfg = WireGuardConfig::new(&interface[..]).chain_err(err).unwrap();
-        let interface = cfg.interface;
-
-        let err = || "Failed getting our public key.";
-        let local_key = interface.public_key().chain_err(err).unwrap();
-
-        let key_pair = (interface.secret_key, remote_key);
-
-        let err = || "Encoding DHT message failed.";
-        (SystemTime::now(), conn)
-            .serialize(&mut wrt)
-            .chain_err(err)
-            .unwrap();
-
-        remote.spawn(move |handle: &Handle| {
             let key = [&local_key[..], &remote_key[..]].concat();
             let value = key_pair.encrypt(&wrt[..]);
 
-            BulletinBoard::insert(handle.clone(), &key[..], &value[..]).map_err(|_| ())
-        });
+            let _ = await!(BulletinBoard::insert(handle.clone(), key, value));
+        }
 
-        ok((sink, stream))
-    });
+        let _ = await!(Timeout::new(Duration::from_secs(60), &handle)?)?;
 
-    Box::new(
-        future
-            .map_err(|(stream, sink, e)| {
-                (
-                    Box::new(sink.sink_map_err(|e| Error::with_chain(e, ""))) as
-                        Box<Sink<SinkItem = MsgPair, SinkError = Error>>,
-                    Box::new(stream.map_err(|e| Error::with_chain(e, ""))) as
-                        Box<Stream<Item = MsgPair, Error = Error>>,
-                    Error::with_chain(e, ""),
-                )
-            })
-            .map(|(sink, stream)| {
-                (
-                    Box::new(sink.sink_map_err(|e| Error::with_chain(e, ""))) as
-                        Box<Sink<SinkItem = MsgPair, SinkError = Error>>,
-                    Box::new(stream.map_err(|e| Error::with_chain(e, ""))) as
-                        Box<Stream<Item = MsgPair, Error = Error>>,
-                )
-            }),
-    )
+        res = await!(stun3489::stun3489_generic(
+            sink,
+            stream,
+            bind_addr,
+            server,
+            handle.clone(),
+            timeout,
+        ));
+    }
 }
 
-pub fn dht_get(
-    handle: Handle,
-    interface: &str,
-    remote_key: PublicKey,
-) -> Result<BoxedFuture<Option<Connectivity>>> {
-    let err = || "Reading WireGuard config failed.";
-    let cfg = WireGuardConfig::new(&interface[..]).chain_err(err)?;
-    let iface = cfg.interface;
-
-    let err = || "Failed getting our public key.";
-    let local_key = iface.public_key().chain_err(err)?;
-
-    let key = [&remote_key[..], &local_key[..]].concat();
-    let future = BulletinBoard::get(handle, &key[..]);
-
-    let future = future.and_then(move |value_list| {
-        let key_pair = (iface.secret_key, remote_key);
-
-        info!("Found {} potential remote credentials", value_list.len());
-        let value_list = value_list.into_iter();
-        let value_list = value_list.filter_map(|v| key_pair.decrypt(&v[..]).ok());
-        let value_list = value_list.map(Cursor::new);
-        let value_list = value_list.filter_map(|mut r| Serialize::deserialize(&mut r).ok());
-
-        let mut conn_list: Vec<(SystemTime, Connectivity)>;
-        conn_list = value_list.collect();
-        conn_list.sort_by(|a, b| a.0.cmp(&b.0).reverse());
-
-        let mut conn_list = conn_list.into_iter().map(|t| t.1);
-        Ok(conn_list.next())
-    });
-
-    Ok(Box::new(future))
-}
