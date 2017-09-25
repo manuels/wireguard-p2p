@@ -1,0 +1,3 @@
+[submodule "src/stun3489"]
+	path = src/stun3489
+	url = https://github.com/manuels/stun3489
