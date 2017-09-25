@@ -6,7 +6,7 @@ authors = ["Manuel Schölling <manuel.schoelling@gmx.de>"]
 [dependencies]
 tokio-core = "*"
 futures-await = { git = 'https://github.com/alexcrichton/futures-await' }
-stun3489 = { path = "../stun3489" }
+stun3489 = { path = "src/stun3489" }
 dbus-tokio = "0.1.1"
 dbus = "0.5.3"
 byteorder = "1.0.0"
