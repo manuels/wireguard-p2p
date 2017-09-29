@@ -24,6 +24,7 @@ use serialization::Serialize;
 use wg::WireGuardConfig;
 use wg::PublicKey;
 
+// TODO: refactor
 #[async]
 pub fn dht_get(handle: Handle,
                secret_key: SecretKey,
@@ -54,6 +55,7 @@ pub fn dht_get(handle: Handle,
     Ok(v)
 }
 
+// TODO: refactor
 #[async]
 pub fn stun_publish(
     handle: Handle,
@@ -98,7 +100,7 @@ pub fn stun_publish(
             let _ = await!(BulletinBoard::insert(handle.clone(), key, value));
         }
 
-        let _ = await!(Timeout::new(Duration::from_secs(60), &handle)?)?;
+        await!(Timeout::new(Duration::from_secs(60), &handle)?)?;
 
         res = await!(stun3489::stun3489_generic(
             sink,

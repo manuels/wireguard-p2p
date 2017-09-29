@@ -44,6 +44,7 @@ mod search;
 mod publish;
 mod duplicate;
 mod serialization;
+mod proxy_connection;
 #[macro_use]
 mod daemon;
 mod bulletinboard;
