@@ -2,6 +2,8 @@
 name = "wireguard-p2p"
 version = "0.1.0"
 authors = ["Manuel Schölling <manuel.schoelling@gmx.de>"]
+description = "A tool for setting up WireGuard connections from peer to peer"
+license = "GPL-3.0"
 
 [dependencies]
 docopt = "0.8.1"
