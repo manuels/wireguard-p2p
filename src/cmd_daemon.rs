@@ -11,6 +11,7 @@ use std::time::Instant;
 use std::time::SystemTime;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
+use std::net::SocketAddrV6;
 use std::collections::HashMap;
 use ini::Ini;
 use futures;
@@ -18,9 +19,9 @@ use futures::prelude::*;
 use futures::future;
 use futures::Sink;
 use futures::Stream;
-use futures::sync::mpsc::Sender;
-use futures::sync::mpsc::Receiver;
-use futures::sync::mpsc::SendError;
+use futures::unsync::mpsc::Sender;
+use futures::unsync::mpsc::Receiver;
+use futures::unsync::mpsc::SendError;
 use tokio_core::reactor::Interval;
 use tokio_core::reactor::Handle;
 use tokio_core::net::UdpCodec;
@@ -37,6 +38,13 @@ use stun3489;
 use stun3489::Connectivity;
 
 struct RawCodec;
+
+pub fn as_ipv6(addr: &SocketAddr) -> SocketAddrV6 {
+    match *addr {
+            SocketAddr::V4(a) => SocketAddrV6::new(a.ip().to_ipv6_compatible(), a.port(), 0, 0),
+            SocketAddr::V6(a) => SocketAddrV6::new(*a.ip(), a.port(), 0, 0),
+    }
+}
 
 impl UdpCodec for RawCodec {
     type In = (SocketAddr, Vec<u8>);
@@ -57,6 +65,7 @@ impl UdpCodec for RawCodec {
 fn publish_credentials(handle: Handle,
                        sink: Sender<(SocketAddr, Vec<u8>)>,
                        stream: Receiver<(SocketAddr, Vec<u8>)>,
+                       stun_running: Rc<RefCell<bool>>,
                        secret_key: SecretKey,
                        peers: HashMap<String, String>)
      -> Result<()>
@@ -75,6 +84,7 @@ fn publish_credentials(handle: Handle,
     for _ in Interval::new_at(Instant::now(), repeat, &handle)? {
         debug!("Trying to determine STUN3489 connectivity...");
 
+        { *stun_running.borrow_mut() = true };
         let res = stun3489::connectivity(sink, stream, bind_addr, stun_server,
             timeout);
 
@@ -91,6 +101,9 @@ fn publish_credentials(handle: Handle,
                 continue
             },
         };
+        { *stun_running.borrow_mut() = false };
+        // TODO: drain stream to prevent potential deadlock in send() (unlikely)
+
         info!("Connectivity: {:?}.", conn);
 
         let mut value = vec![];
@@ -123,8 +136,8 @@ fn lookup_credentials(handle: Handle,
                       dev: String,
                       secret_key: SecretKey,
                       remote_key: String,
-                      inet2wg: Rc<RefCell<HashMap<SocketAddr, Sender<(SocketAddr, Vec<u8>)>>>>,
-                      mappings: Rc<RefCell<HashMap<SocketAddr, SocketAddr>>>)
+                      inet2wg: Rc<RefCell<HashMap<SocketAddrV6, Sender<(SocketAddr, Vec<u8>)>>>>,
+                      mappings: Rc<RefCell<HashMap<SocketAddrV6, SocketAddr>>>)
     -> Result<()>
 {
     let peer_key = str2key(&remote_key)?;
@@ -155,13 +168,14 @@ fn lookup_credentials(handle: Handle,
         info!("Credentials for {:?} found: {:?}", remote_key, conn);
         if let Some(remote_addr) = conn {
             debug!("Setting up endpoint...");
-            if !inet2wg.borrow().contains_key(&remote_addr) {
+            let remote_addr_ipv6 = as_ipv6(&remote_addr);
+            if !inet2wg.borrow().contains_key(&remote_addr_ipv6) {
                 let (bind_addr, sink) = new_loopback_socket(&handle, remote_addr, outbound.clone())?;
-                inet2wg.borrow_mut().insert(remote_addr, sink);
-                mappings.borrow_mut().insert(remote_addr, bind_addr);
+                inet2wg.borrow_mut().insert(remote_addr_ipv6, sink);
+                mappings.borrow_mut().insert(remote_addr_ipv6, bind_addr);
             }
 
-            let b = { mappings.borrow().get(&remote_addr).cloned() };
+            let b = mappings.borrow().get(&remote_addr_ipv6).cloned();
             if let Some(local_addr) = b {
                 await!(WireguardCommand::set_endpoint(handle.clone(), dev.clone(),
                     peer_key, local_addr))?;
@@ -192,7 +206,7 @@ fn new_loopback_socket(handle: &Handle, dst: SocketAddr, outbound: Sender<(Socke
     -> Result<(SocketAddr, Sender<(SocketAddr, Vec<u8>)>)>
 {
     let ip = Ipv6Addr::localhost();
-    let bind_addr: SocketAddr = (ip, 0).into();
+    let bind_addr = (ip, 0).into();
 
     let udp = UdpSocket::bind(&bind_addr, handle)?;
     let bind_addr = udp.local_addr()?;
@@ -200,19 +214,22 @@ fn new_loopback_socket(handle: &Handle, dst: SocketAddr, outbound: Sender<(Socke
     let (sink, stream) = udp.split();
 
     let outbound = outbound.sink_map_err(|_| io::Error::new(ErrorKind::Other, "oh no!"));
-    let stream = stream.map(move |(_src, msg)| (dst, msg));
+    let stream = stream.map(move |(src, msg)| {
+        debug!("Forwarding {} outgoing bytes from {} via {} to {}", msg.len(), src, bind_addr, dst);
+        (dst, msg)
+    });
     let f = stream.forward(outbound);
 
     let f = f.map(|_| warn!("stream.forward(outbound) done"));
-    let f = f.map_err(|_| ()); // TODO: report error
+    let f = f.map_err(|e| error!("stream.forward(outbound) {:?}", e));
     handle.spawn(f);
 
-    let (tx, rx) = futures::sync::mpsc::channel(1024);
+    let (tx, rx) = futures::unsync::mpsc::channel(1024);
     let rx = rx.map_err(|_| io::Error::new(ErrorKind::Other, "oh no!"));
     let f = rx.forward(sink);
 
     let f = f.map(|_| warn!("rx.forward(sink) done"));
-    let f = f.map_err(|_| ()); // TODO: report error
+    let f = f.map_err(|e| error!("rx.forward(sink) {:?}", e));
     handle.spawn(f);
 
     Ok((bind_addr, tx))
@@ -220,45 +237,49 @@ fn new_loopback_socket(handle: &Handle, dst: SocketAddr, outbound: Sender<(Socke
 
 #[async]
 fn dispatch_inbound<I,O>(handle: Handle,
-                         stream: I,
+                         inbound: I,
                          outbound: Sender<(SocketAddr, Vec<u8>)>,
                          mut stun_sink: O,
-                         inet2wg: Rc<RefCell<HashMap<SocketAddr, Sender<(SocketAddr, Vec<u8>)>>>>,
-                         mappings: Rc<RefCell<HashMap<SocketAddr,SocketAddr>>>,
+                         inet2wg: Rc<RefCell<HashMap<SocketAddrV6, Sender<(SocketAddr, Vec<u8>)>>>>,
+                         mappings: Rc<RefCell<HashMap<SocketAddrV6,SocketAddr>>>,
+                         stun_running: Rc<RefCell<bool>>,
                          wg_port: u16)
     -> Result<()>
     where I: Stream<Item=(SocketAddr, Vec<u8>), Error=io::Error> + 'static,
           O: Sink<SinkItem=(SocketAddr, Vec<u8>), SinkError=SendError<(SocketAddr, Vec<u8>)>> + Clone + 'static,
 {
-    let ip = Ipv6Addr::localhost();
-    let wg_addr: SocketAddr = (ip, wg_port).into();
+    let wg_addr = (Ipv6Addr::localhost(), wg_port).into();
 
     #[async]
-    for (src, msg) in stream {
-        stun_sink = match await!(stun_sink.send((src, msg.clone()))) {
-            Ok(sink) => sink,
-            Err(e) => {
-                warn!("ERROR: {:?}", e);
-                Err(io::Error::new(ErrorKind::Other, format!("stun_sink.send() failed: {:?}", e)))?
-            }
-        };
+    for (src, msg) in inbound {
+        if { *stun_running.borrow() } {
+            stun_sink = match await!(stun_sink.send((src, msg.clone()))) {
+                Ok(sink) => sink,
+                Err(e) => {
+                    warn!("ERROR: {:?}", e);
+                    Err(io::Error::new(ErrorKind::Other, format!("stun_sink.send() failed: {:?}", e)))?
+                }
+            };
+        }
 
         // TODO: use sockets.entry().or_insert_with()
         // let s = sockets.entry(src.port()).or_insert_with(new_loopback_socket);
-        if !inet2wg.borrow().contains_key(&src) {
+        let src_ipv6 = as_ipv6(&src);
+        if !inet2wg.borrow().contains_key(&src_ipv6) {
             let (bind_addr, sink) = new_loopback_socket(&handle, src, outbound.clone())?;
-            inet2wg.borrow_mut().insert(src, sink);
-            mappings.borrow_mut().insert(src, bind_addr);
+            inet2wg.borrow_mut().insert(src_ipv6, sink);
+            mappings.borrow_mut().insert(src_ipv6, bind_addr);
         }
 
-        debug!("Forwarding {} incoming bytes from {} to {}.", msg.len(), src, wg_addr);
-        let s = inet2wg.borrow().get(&src).map(|s| s.clone()).expect("unreachable");
+        let local_addr = mappings.borrow().get(&src_ipv6).map(|s| s.clone()).expect("unreachable");
+        debug!("Forwarding {} incoming bytes from {} via {} to {}.", msg.len(), src, local_addr, wg_addr);
+        let s = inet2wg.borrow().get(&src_ipv6).map(|s| s.clone()).expect("unreachable");
         let f = s.send((wg_addr, msg.clone()));
 
         let f = f.map(|_| ());
 //        let f = f.map_err(|_| io::Error::new(ErrorKind::Other, "oh no!"));
-        let f = f.map_err(|e| error!("{:?}", e));
-        handle.spawn(f);
+        //let f = f.map_err(|e| error!("{:?}", e));
+        await!(f).unwrap();
     }
 
     unreachable!();
@@ -273,6 +294,14 @@ pub fn daemon(handle: Handle, cfg_path: String) -> Result<()> {
     let sections = cfg.into_iter().filter_map(|(n, peers)| n.map(|n| (n, peers)));
 
     for (iface, peers) in sections {
+        let mappings = Rc::new(RefCell::new(HashMap::new()));
+        let inet2wg = Rc::new(RefCell::new(HashMap::new()));
+        let stun_running = Rc::new(RefCell::new(false));
+
+        let (outbound_sender, outbound_receiver) = futures::unsync::mpsc::channel(1024);
+        let (inet2stun_sink, inet2stun_stream) = futures::unsync::mpsc::channel(1024);
+        let (stun2inet_sink, stun2inet_stream) = futures::unsync::mpsc::channel(1024);
+
         let iface = iface.to_string();
         let cfg = await!(WireguardCommand::interface(handle.clone(), iface.clone()))?;
         let secret_key = cfg.secret_key()?;
@@ -282,22 +311,16 @@ pub fn daemon(handle: Handle, cfg_path: String) -> Result<()> {
         let bind_addr = (Ipv6Addr::unspecified(), listen_port).into();
         let udp_public = UdpSocket::bind(&bind_addr, &handle)?;
         let (public_sink, public_stream) = udp_public.framed(RawCodec).split();
-
-        let (outbound_sender, outbound_receiver) = futures::sync::mpsc::channel(1024);
-        let (inet2stun_sink, inet2stun_stream) = futures::sync::mpsc::channel(1024);
-        let (stun2inet_sink, stun2inet_stream) = futures::sync::mpsc::channel(1024);
+        let public_stream = public_stream.inspect(|&(src, ref msg)| debug!("Received {} inbound bytes from {}.", msg.len(), src));
 
         handle.spawn(report!(dispatch_outbound(public_sink, outbound_receiver)));
 
-        let mappings = Rc::new(RefCell::new(HashMap::new()));
-        let inet2wg = Rc::new(RefCell::new(HashMap::new()));
-
         let f = dispatch_inbound(handle.clone(), public_stream, outbound_sender.clone(),
-            inet2stun_sink, inet2wg.clone(), mappings.clone(), wg_port);
+            inet2stun_sink, inet2wg.clone(), mappings.clone(), stun_running.clone(), wg_port);
         handle.spawn(report!(f));
 
         handle.spawn(report!(publish_credentials(handle.clone(),
-            stun2inet_sink, inet2stun_stream, secret_key.clone(), peers.clone())));
+            stun2inet_sink, inet2stun_stream, stun_running, secret_key.clone(), peers.clone())));
 
         for (_, peer_key) in peers {
             handle.spawn(report!(lookup_credentials(handle.clone(), outbound_sender.clone(),
@@ -307,7 +330,7 @@ pub fn daemon(handle: Handle, cfg_path: String) -> Result<()> {
         let outbound_sender = outbound_sender.sink_map_err(|_| ());
         handle.spawn(stun2inet_stream.forward(outbound_sender).map(|(_s,_t)| {
             println!("stun2inet_stream.forward(outbound_sender) done");
-        ()}));
+        }));
     }
 
     await!(future::empty())

@@ -62,6 +62,7 @@ use tokio_core::reactor::Core;
 use cmd_publish::publish;
 use cmd_search::search;
 use cmd_daemon::daemon;
+use env_logger::{Builder, Target};
 
 mod errors {
     error_chain!{
@@ -80,7 +81,11 @@ mod errors {
 quick_main!(run);
 
 fn run() -> Result<()> {
-    env_logger::init();
+    let mut builder = Builder::new();
+    builder.target(Target::Stdout);
+    let rust_log = std::env::var("RUST_LOG").unwrap_or("wireguard_p2p=info".to_string());
+    builder.parse(&rust_log);
+    builder.init();
 
     let argv = std::env::args();
     let args = Docopt::new(USAGE)
