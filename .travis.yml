@@ -1,0 +1,14 @@
+language: rust
+rust:
+  - beta
+  - nightly
+matrix:
+  allow_failures:
+    - rust: beta
+cache: cargo
+
+script:
+  - sudo apt-get update && sudo apt-get install libsodium-dev;
+  - cargo build --verbose --all --release
+  - cargo test --verbose --all
+
