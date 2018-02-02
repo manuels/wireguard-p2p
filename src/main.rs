@@ -11,6 +11,7 @@ extern crate sodiumoxide;
 extern crate futures_await as futures;
 extern crate tokio_core;
 extern crate tokio_process;
+extern crate tokio_timer;
 extern crate dbus;
 extern crate dbus_tokio;
 extern crate stun3489;

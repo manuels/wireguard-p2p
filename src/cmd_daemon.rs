@@ -26,6 +26,7 @@ use tokio_core::reactor::Interval;
 use tokio_core::reactor::Handle;
 use tokio_core::net::UdpCodec;
 use tokio_core::net::UdpSocket;
+use tokio_timer::Timer;
 
 use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::SecretKey;
 use sodiumoxide::crypto::box_::curve25519xsalsa20poly1305::PublicKey;
@@ -78,15 +79,17 @@ fn publish_credentials(handle: Handle,
 
     let sink = sink.sink_map_err(|_| io::Error::new(ErrorKind::Other, "oh no!"));
     let stream = stream.map_err(|()| io::Error::new(ErrorKind::Other, "oh no!"));
-    let (mut sink, mut stream) = stun3489::codec(sink, stream);
+    let (mut sink, astream) = stun3489::codec(sink, stream);
+
+    let mut stream: Box<Stream<Item=(u64, stun3489::codec::Response),Error=io::Error>>;
+    stream = Box::new(Timer::default().timeout_stream(astream, timeout));
 
     #[async]
     for _ in Interval::new_at(Instant::now(), repeat, &handle)? {
         debug!("Trying to determine STUN3489 connectivity...");
 
         { *stun_running.borrow_mut() = true };
-        let res = stun3489::connectivity(sink, stream, bind_addr, stun_server,
-            timeout);
+        let res = stun3489::connectivity(sink, stream, bind_addr, stun_server);
 
         let conn = match await!(res) {
             Ok(((asink, astream), conn)) => {
