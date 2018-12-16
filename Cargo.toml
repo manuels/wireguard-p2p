@@ -1,0 +1,18 @@
+[package]
+name = "wireguard-p2p"
+version = "0.1.0"
+authors = ["Manuel Schölling <manuel.schoelling@gmx.de>"]
+edition = "2018"
+
+[dependencies]
+tokio = {version = "0.1", features = ["async-await-preview"]}
+bytes = "*"
+env_logger = "*"
+log = "*"
+futures = "*"
+rustun = "*"
+stun3489 = { path = "../stun3489" }
+opendht = { path = "../opendht" }
+byteorder = "*"
+base64 = "*"
+tokio-process = "*"
