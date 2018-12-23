@@ -1,27 +1,34 @@
-use std::io;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 
 use tokio::prelude::*;
+use futures::sync::mpsc::UnboundedSender;
 use futures::sync::mpsc;
 use bytes::Bytes;
 use bytes::BytesMut;
 
-type UdpStream = tokio::prelude::stream::SplitStream<tokio::net::UdpFramed<tokio::codec::BytesCodec>>;
 type UdpSink = tokio::prelude::stream::SplitSink<tokio::net::UdpFramed<tokio::codec::BytesCodec>>;
 
 // forward outbound data to udp socket
+/*
 pub async fn forward_outbound(
-        rx: impl Stream<Item=(Bytes, SocketAddr)>,
-        inet_send: UdpSink)
+        rx: impl Stream<Item=(Bytes, SocketAddr)> + std::marker::Unpin,
+        mut inet_send: impl Sink<SinkItem=(Bytes, SocketAddr), SinkError=SendError<(bytes::Bytes, std::net::SocketAddr)>> + std::marker::Unpin
+    )
 {
     let rx = rx.map_err(|_| io::Error::new(io::ErrorKind::Other, "TODO"));
-    let rx = rx.inspect(|(pkt, dst)| debug!("<< {} bytes to {}", pkt.len(), dst));
+    let mut rx = rx.inspect(|(pkt, dst)| debug!("<< {} bytes to {}", pkt.len(), dst));
 
-    await!(rx.forward(inet_send)).unwrap();
+    while let Some(res) = await!(rx.next()) {
+        match res {
+            Ok(item) => log_err!(await!(inet_send.send_async(item)), "forward_outbound Send Error: {:?}"),
+            Err(err) => error!("forward_outbound Error: {:?}", err)
+        }
+    }
 }
+*/
 
 /// Create a new loopback socket for a new peer to forward packets between the
 /// public socket and the loopback wireguard socket
@@ -41,9 +48,9 @@ fn create_internal_socket(remote_addr: SocketAddr,
         while let Some(res) = await!(recv.next()) {
             match res {
                 Err(e) => error!("{:?}", e),
-                Ok((pkt, _wg_addr)) => {
+                Ok((pkt, wg_addr)) => {
                     let pkt = Bytes::from(pkt);
-                    debug!("<< {} bytes via {} to {}", pkt.len(), port, remote_addr);
+                    debug!("LO2OUT {} bytes from {} via lo port {} to {}", pkt.len(), wg_addr, port, remote_addr);
 
                     await!(outbound.send_async((pkt, remote_addr))).unwrap();
                 }
@@ -55,9 +62,10 @@ fn create_internal_socket(remote_addr: SocketAddr,
 }
 
 pub async fn forward_inbound(
-    mut inbound: UdpStream,
-    mut stun: impl Sink<SinkItem=(BytesMut, SocketAddr), SinkError=impl std::fmt::Debug> + std::marker::Unpin,
-    outbound: mpsc::UnboundedSender<(Bytes, SocketAddr)>,
+    mut new_endpoints_tx: UnboundedSender<(SocketAddr, u16)>,
+    mut udp_rx: impl Stream<Item=(BytesMut, SocketAddr), Error=impl std::fmt::Debug> + std::marker::Unpin,
+    mut inet2stun_tx: impl Sink<SinkItem=(BytesMut, SocketAddr), SinkError=impl std::fmt::Debug> + std::marker::Unpin,
+    udp_tx: mpsc::UnboundedSender<(Bytes, SocketAddr)>,
     wg_port: u16)
 {
     let mut connections = HashMap::new();
@@ -70,25 +78,35 @@ pub async fn forward_inbound(
     //       forward UdpStream to UnboundedSender,
     //       clone UnboundedSender and let Dht send empty packets
 
-    while let Some(res) = await!(inbound.next()) {
+    // TODO: select2(inbound, new_dht_endpoint)
+    while let Some(res) = await!(udp_rx.next()) {
         match res {
-            Err(e) => error!("{:?}", e),
+            Err(e) => error!("UDP Receive Error: {:?}", e),
             Ok((pkt, remote_addr)) => {
-                await!(stun.send_async((pkt.clone(), dst))).unwrap();
+                log_err!(await!(inet2stun_tx.send_async((pkt.clone(), dst))), "inet2stun_tx Send Error: {:?}");
 
                 // TODO: cache this lookup?
+                let mut is_new = false;
                 let (via_sock, via_port) = connections
                     .entry(remote_addr)
                     .or_insert_with(|| {
-                        create_internal_socket(remote_addr, outbound.clone()).unwrap()
+                        is_new = true;
+                        create_internal_socket(remote_addr, udp_tx.clone()).unwrap()
+                        // TODO: send to broadcast (to dht)
                     });
+                if is_new {
+                    log_err!(await!(new_endpoints_tx.send_async((remote_addr, *via_port))),
+                        "New Endpoint Send Error: {:?}");
+                }
 
-                debug!(">> {} bytes from {} via port {} to port {}",
+                debug!("IN2LO {} bytes from {} via lo port {} to wg port {}",
                     pkt.len(), remote_addr, via_port, dst.port());
 
                 let pkt = Bytes::from(pkt);
-                await!(via_sock.send_async((pkt, dst))).unwrap();
+                log_err!(await!(via_sock.send_async((pkt, dst))),
+                    "lo2wg Send Error: {:?}");
             }
         }
     }
 }
+

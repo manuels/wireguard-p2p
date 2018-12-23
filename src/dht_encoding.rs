@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use std::io::Cursor;
 use std::io::Read;
 use std::io::Error;
+use std::time::Duration;
 use std::io::ErrorKind;
 
 use bytes::BytesMut;
@@ -18,9 +19,11 @@ pub fn encode_key(key1: &[u8], key2: &[u8]) -> Bytes {
     key.freeze()
 }
 
-pub fn encode_value(addr: SocketAddr) -> Bytes {
+pub fn encode_value(time: Duration, addr: SocketAddr) -> Bytes {
     let mut value = BytesMut::with_capacity(256);
     value.put("wg-p2p-v3");
+
+    value.put_u64_be(time.as_secs());
 
     match addr.ip() {
         IpAddr::V4(ip) => {
@@ -37,7 +40,7 @@ pub fn encode_value(addr: SocketAddr) -> Bytes {
     value.freeze()
 }
 
-pub fn decode_value(buf: &[u8]) -> Result<SocketAddr, Error> {
+pub fn decode_value(buf: &[u8]) -> Result<(Duration, SocketAddr), Error> {
     let mut c = Cursor::new(buf);
 
     let expected = b"wg-p2p-v3";
@@ -47,6 +50,9 @@ pub fn decode_value(buf: &[u8]) -> Result<SocketAddr, Error> {
     if &actual != expected {
         return Err(Error::new(ErrorKind::InvalidInput, "TODO"));
     }
+
+    let time = c.read_u64::<BigEndian>()?;
+    let time = Duration::from_secs(time);
 
     let ip_version = c.read_u8()?;
     let ip = match ip_version {
@@ -64,5 +70,5 @@ pub fn decode_value(buf: &[u8]) -> Result<SocketAddr, Error> {
     };
     let port = c.read_u16::<BigEndian>()?;
 
-    Ok((ip, port).into())
+    Ok((time, (ip, port).into()))
 }

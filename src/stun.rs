@@ -34,9 +34,12 @@ pub async fn run(
             Error::new(ErrorKind::TimedOut, ""))
         );
 
-        let stream = stream.map(|(mut pkt, src)| {
-            let data = StunCodec.decode(&mut pkt).unwrap().unwrap();
-            (data, src)
+        let stream = stream.filter_map(|(mut pkt, src)| {
+            if let Ok(decoded) = StunCodec.decode(&mut pkt) {
+                decoded.map(|data| (data, src))
+            } else {
+                None
+            }
         });
 
         let (tx, rx) = futures::sync::mpsc::unbounded();
@@ -80,9 +83,9 @@ pub async fn run(
 
         let delay = match await!(stun.check(bind_addr, server_addr)) {
             Ok(conn) => {
-                println!("{:?}", conn);
+                info!("{:?}", conn);
                 let conn: Option<SocketAddr> = conn.into();
-                *public_addr.lock().unwrap() = conn;
+                { *public_addr.lock().unwrap() = conn; }
 
                 if conn.is_some() {
                     Duration::from_secs(60)
@@ -91,7 +94,7 @@ pub async fn run(
                 }
             },
             Err(err) => {
-                println!("{:?}", err);
+                error!("{:?}", err);
                 Duration::from_secs(15)
             },
         };

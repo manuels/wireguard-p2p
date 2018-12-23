@@ -16,3 +16,9 @@ opendht = { path = "../opendht" }
 byteorder = "*"
 base64 = "*"
 tokio-process = "*"
+structopt = { version = "0.2", default-features = false }
+serde = "*"
+serde_derive = "*"
+serde_ini = "*"
+clap = "*"
+regex = "*"
