@@ -16,6 +16,7 @@ extern crate serde;
 extern crate serde_ini;
 extern crate clap;
 extern crate regex;
+extern crate sodiumoxide;
 
 extern crate stun3489;
 extern crate opendht;
@@ -29,12 +30,16 @@ macro_rules! log_err {
 }
 
 use std::io::Error;
-use std::net::SocketAddr;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
+use std::net::SocketAddr;
+use std::net::ToSocketAddrs;
 use std::collections::HashMap;
 
 use tokio::prelude::*;
+use sodiumoxide::crypto::box_;
+use sodiumoxide::crypto::box_::PublicKey;
+use sodiumoxide::crypto::box_::SecretKey;
 
 use structopt::StructOpt;
 
@@ -42,11 +47,12 @@ mod wg;
 mod dht;
 mod stun;
 mod utils;
+mod crypto;
 mod traffic;
 mod dht_encoding;
 
-use crate::utils::CloneReceiver;
-use crate::utils::CloneSender;
+use crate::utils::CloneSink;
+use crate::utils::CloneStream;
 
 #[derive(Debug)]
 struct CmdOpts {
@@ -139,6 +145,9 @@ struct CmdOpt {
 
     #[structopt(long = "dht-port", default_value = "4222")]
     dht_port: u16,
+
+    #[structopt(long = "bootstrap", default_value = "bootstrap.ring.cx:4222")]
+    bootstrap_addrs: String,
 }
 
 fn inject<T>(mut stream: impl Stream<Item=T, Error=impl std::fmt::Debug + Send> + std::marker::Unpin + Send + 'static)
@@ -175,8 +184,10 @@ fn main() -> Result<(), Error> {
 
     let netns = opt.netns;
     let dht_port = opt.dht_port;
+    let bootstrap_addrs: Vec<_> = opt.bootstrap_addrs.to_socket_addrs().unwrap().collect();
+
     tokio::run_async(async move {
-        let dht = await!(dht::Dht::new(dht_port));
+        let dht = await!(dht::Dht::new(&bootstrap_addrs, dht_port));
 
         for wg_iface in await!(wg::get_interfaces(netns.clone())).unwrap().into_iter() {
             let (public_addr_tx, mut public_addr_rx) = futures::sync::mpsc::unbounded();
@@ -198,12 +209,17 @@ fn main() -> Result<(), Error> {
             tokio::spawn_async(traffic::forward_inbound(new_endpoints_tx, udp_rx, inet2stun_tx, udp_tx, wg_port));
             tokio::spawn_async(stun::run(inet2stun_rx, stun2inet_tx, bind_addr, stun_server.clone(), public_addr_tx));
 
+            let local_secret_key = await!(wg::local_secret_key(netns.clone(), &wg_iface)).unwrap();
             let local_public_key = await!(wg::local_public_key(netns.clone(), &wg_iface)).unwrap();
 
             let peer_list = wg_cfg.peers.iter().map(|p| &p.public_key);
             for remote_public_key in peer_list {
                 info!("Managing peer {} on interface {}.", remote_public_key, wg_iface.clone());
                 let remote_public_key = base64::decode(remote_public_key).unwrap();
+                let secret_key = SecretKey::from_slice(&local_secret_key).unwrap();
+                let public_key = PublicKey::from_slice(&remote_public_key).unwrap();
+                let shared_key = box_::precompute(&public_key, &secret_key);
+
                 let (public_addr_rrx, addr_rx) = public_addr_rx.clone_stream();
                 public_addr_rx = addr_rx;
 
@@ -213,8 +229,9 @@ fn main() -> Result<(), Error> {
                 let dht2 = dht.clone();
                 let local_public_key2 = local_public_key.clone();
                 let remote_public_key2 = remote_public_key.clone();
+                let shared_key2 = shared_key.clone();
                 tokio::spawn_async(async move {
-                    await!(dht2.put_loop(public_addr_rrx, local_public_key2, remote_public_key2))
+                    await!(dht2.put_loop(shared_key2, public_addr_rrx, local_public_key2, remote_public_key2))
                 });
 
                 let dht2 = dht.clone();
@@ -224,12 +241,18 @@ fn main() -> Result<(), Error> {
                 let wg_iface = wg_iface.clone();
                 let netns = netns.clone();
                 tokio::spawn_async(async move {
-                    await!(dht2.get_loop(netns.clone(), new_endpoints_rrx, local_public_key2, remote_public_key2, &wg_iface, dht2wg_ttx));
+                    await!(dht2.get_loop(shared_key, netns.clone(), new_endpoints_rrx, local_public_key2, remote_public_key2, &wg_iface, dht2wg_ttx));
                 });
             }
 
             tokio::spawn_async(async move {
                 while let Some(_) = await!(new_endpoints_rx.next()) {
+                    // noop
+                }
+            });
+
+            tokio::spawn_async(async move {
+                while let Some(_) = await!(public_addr_rx.next()) {
                     // noop
                 }
             });

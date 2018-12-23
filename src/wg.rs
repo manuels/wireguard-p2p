@@ -148,3 +148,26 @@ pub async fn local_public_key<'a>(netns: Option<String>, iface: &'a str) -> Resu
         Err(Error::new(ErrorKind::InvalidInput, format!("TODO wg: {}", msg)))
     }
 }
+
+pub async fn local_secret_key<'a>(netns: Option<String>, iface: &'a str) -> Result<Vec<u8>, Error> {
+    let mut cmd = &mut Command::new("sudo");
+    if let Some(netns) = netns {
+        cmd = cmd.arg("ip").arg("netns").arg("exec").arg(netns);
+    }
+    let cmd = cmd
+            .arg("wg")
+            .arg("show")
+            .arg(iface)
+            .arg("private-key")
+            .output_async();
+    let out = await!(cmd)?;
+
+    if out.status.success() {
+        let out = std::str::from_utf8(&out.stdout).unwrap();
+        let key = base64::decode(&out.trim()).unwrap();
+        Ok(key)
+    } else {
+        let msg = std::str::from_utf8(&out.stdout).unwrap();
+        Err(Error::new(ErrorKind::InvalidInput, format!("TODO wg: {}", msg)))
+    }
+}

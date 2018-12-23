@@ -2,14 +2,14 @@ use futures::sync::mpsc;
 use futures::Stream;
 use tokio::prelude::*;
 
-pub trait CloneReceiver: Stream
+pub trait CloneStream: Stream
 where
     Self::Item: Clone + Send
 {
     fn clone_stream(self) -> (mpsc::UnboundedReceiver<Self::Item>, mpsc::UnboundedReceiver<Self::Item>);
 }
 
-impl<T: StreamExt + std::marker::Unpin + Send + 'static> CloneReceiver for T
+impl<T: StreamExt + std::marker::Unpin + Send + 'static> CloneStream for T
 where T::Item: Clone + Send,
     T::Error: std::fmt::Debug + Send
 {
@@ -35,14 +35,14 @@ where T::Item: Clone + Send,
     }
 }
 
-pub trait CloneSender: Sink
+pub trait CloneSink: Sink
 where
     Self::SinkItem: Send
 {
     fn clone_sink(self) -> (mpsc::UnboundedSender<Self::SinkItem>, mpsc::UnboundedSender<Self::SinkItem>);
 }
 
-impl<T: SinkExt + std::marker::Unpin + Send + 'static> CloneSender for T
+impl<T: SinkExt + std::marker::Unpin + Send + 'static> CloneSink for T
 where T::SinkItem: Send,
     T::SinkError: std::fmt::Debug + Send
 {

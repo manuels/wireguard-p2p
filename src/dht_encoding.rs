@@ -48,7 +48,7 @@ pub fn decode_value(buf: &[u8]) -> Result<(Duration, SocketAddr), Error> {
     c.read_exact(&mut actual[..])?;
 
     if &actual != expected {
-        return Err(Error::new(ErrorKind::InvalidInput, "TODO"));
+        return Err(Error::new(ErrorKind::InvalidData, "Invalid magic data"));
     }
 
     let time = c.read_u64::<BigEndian>()?;
@@ -66,7 +66,7 @@ pub fn decode_value(buf: &[u8]) -> Result<(Duration, SocketAddr), Error> {
             c.read_exact(&mut addr)?;
             IpAddr::V6(addr.into())
         }
-        _ => return Err(Error::new(ErrorKind::InvalidInput, "TODO"))
+        _ => return Err(Error::new(ErrorKind::InvalidData, "Invalid IP version"))
     };
     let port = c.read_u16::<BigEndian>()?;
 

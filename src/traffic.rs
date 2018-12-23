@@ -4,12 +4,15 @@ use std::net::IpAddr;
 use std::net::Ipv4Addr;
 
 use tokio::prelude::*;
+use tokio::prelude::stream::SplitSink;
+use tokio::codec::BytesCodec;
+use tokio::net::UdpFramed;
 use futures::sync::mpsc::UnboundedSender;
 use futures::sync::mpsc;
 use bytes::Bytes;
 use bytes::BytesMut;
 
-type UdpSink = tokio::prelude::stream::SplitSink<tokio::net::UdpFramed<tokio::codec::BytesCodec>>;
+type UdpSink = SplitSink<UdpFramed<BytesCodec>>;
 
 /// Create a new loopback socket for a new peer to forward packets between the
 /// public socket and the loopback wireguard socket
@@ -21,8 +24,8 @@ fn create_internal_socket(remote_addr: SocketAddr,
     let sock = tokio::net::UdpSocket::bind(&loop_addr)?;
     let port = sock.local_addr()?.port();
     
-    let codec = tokio::codec::BytesCodec::new();
-    let (send, mut recv) = tokio::net::UdpFramed::new(sock, codec).split();
+    let codec = BytesCodec::new();
+    let (send, mut recv) = UdpFramed::new(sock, codec).split();
 
     // forward packets from the new loopback socket to the remote peer
     tokio::spawn_async(async move {
@@ -52,14 +55,6 @@ pub async fn forward_inbound(
     let mut connections = HashMap::new();
     let dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), wg_port);
 
-    // TODO: on new remote peer from dht:
-    //       1) insert remote peer into connections
-    //       2) set wireguard peer to remote peer
-    // PLAN: use UnboundedReceiver instead of UdpStream,
-    //       forward UdpStream to UnboundedSender,
-    //       clone UnboundedSender and let Dht send empty packets
-
-    // TODO: select2(inbound, new_dht_endpoint)
     while let Some(res) = await!(udp_rx.next()) {
         match res {
             Err(e) => error!("UDP Receive Error: {:?}", e),
@@ -90,4 +85,3 @@ pub async fn forward_inbound(
         }
     }
 }
-
