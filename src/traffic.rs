@@ -11,25 +11,6 @@ use bytes::BytesMut;
 
 type UdpSink = tokio::prelude::stream::SplitSink<tokio::net::UdpFramed<tokio::codec::BytesCodec>>;
 
-// forward outbound data to udp socket
-/*
-pub async fn forward_outbound(
-        rx: impl Stream<Item=(Bytes, SocketAddr)> + std::marker::Unpin,
-        mut inet_send: impl Sink<SinkItem=(Bytes, SocketAddr), SinkError=SendError<(bytes::Bytes, std::net::SocketAddr)>> + std::marker::Unpin
-    )
-{
-    let rx = rx.map_err(|_| io::Error::new(io::ErrorKind::Other, "TODO"));
-    let mut rx = rx.inspect(|(pkt, dst)| debug!("<< {} bytes to {}", pkt.len(), dst));
-
-    while let Some(res) = await!(rx.next()) {
-        match res {
-            Ok(item) => log_err!(await!(inet_send.send_async(item)), "forward_outbound Send Error: {:?}"),
-            Err(err) => error!("forward_outbound Error: {:?}", err)
-        }
-    }
-}
-*/
-
 /// Create a new loopback socket for a new peer to forward packets between the
 /// public socket and the loopback wireguard socket
 fn create_internal_socket(remote_addr: SocketAddr,

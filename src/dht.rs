@@ -40,29 +40,23 @@ impl Dht {
     }
 
     pub async fn put_loop(&self,
-        stun_addr: Arc<Mutex<Option<SocketAddr>>>,
+        mut stun_addr_rx: impl Stream<Item=SocketAddr, Error=impl std::fmt::Debug> + std::marker::Unpin + 'static,
         local_public_key: Vec<u8>,
         remote_public_key: Vec<u8>,
     ) {
         let key = dht_encoding::encode_key(&local_public_key, &remote_public_key);
 
-        let mut public_addr = None;
-        loop {
-            public_addr = { (*stun_addr.lock().unwrap()).or(public_addr) };
-            let delay = if let Some(addr) = public_addr {
-                debug!("Putting public_addr: {:?}", public_addr);
-                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
-                let value = dht_encoding::encode_value(now, addr);
+        while let Some(res) = await!(stun_addr_rx.next()) {
+            match res {
+                Ok(addr) => {
+                    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+                    let value = dht_encoding::encode_value(now, addr);
 
-                // TODO: encrypt
-                await!(self.0.put(&key[..], &value)).unwrap();
-
-                Duration::from_secs(60)
-            } else {
-                Duration::from_secs(5)
-            };
-
-            await!(Delay::new(Instant::now() + delay)).unwrap();
+                    // TODO: encrypt
+                    await!(self.0.put(&key[..], &value)).unwrap();
+                }
+                Err(err) => error!("{:?}", err)
+            }
         }
     }
 
@@ -78,9 +72,6 @@ impl Dht {
 
         use std::net::IpAddr;
         let lo_ip: IpAddr = [127, 0, 0, 1].into();
-
-        log_err!(await!(Delay::new(Instant::now() + Duration::from_secs(10))), "Delay {:?}");
-        debug!("Get loop start!");
 
         let iface = wg_iface.to_string();
         let pubkey = remote_public_key.clone();

@@ -5,15 +5,13 @@ use std::net::ToSocketAddrs;
 use std::time::Duration;
 use std::time::Instant;
 
-use std::sync::Arc;
-use std::sync::Mutex;
-
 use tokio::prelude::{*};
 use tokio::codec::Decoder;
 use tokio::codec::Encoder;
 use tokio::timer::Delay;
 use bytes::Bytes;
 use bytes::BytesMut;
+use futures::sync::mpsc::SendError;
 
 use stun3489::Stun3489;
 use stun3489::StunCodec;
@@ -23,7 +21,7 @@ pub async fn run(
     sink: impl Sink<SinkItem=(Bytes, SocketAddr)> + std::marker::Unpin + Send + 'static,
     bind_addr: SocketAddr,
     stun_server: String,
-    public_addr: Arc<Mutex<Option<SocketAddr>>>,
+    mut public_addr_tx: impl Sink<SinkItem=SocketAddr, SinkError=SendError<SocketAddr>> + std::marker::Unpin,
 ) {
     let prepare_io = || {
         let stream = stream.map_err(|_|
@@ -85,7 +83,9 @@ pub async fn run(
             Ok(conn) => {
                 info!("{:?}", conn);
                 let conn: Option<SocketAddr> = conn.into();
-                { *public_addr.lock().unwrap() = conn; }
+                if let Some(addr) = conn {
+                    log_err!(await!(public_addr_tx.send_async(addr)), "Stun Send Error: {:?}");
+                }
 
                 if conn.is_some() {
                     Duration::from_secs(60)

@@ -32,8 +32,6 @@ use std::io::Error;
 use std::net::SocketAddr;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
-use std::sync::Mutex;
 use std::collections::HashMap;
 
 use tokio::prelude::*;
@@ -181,7 +179,7 @@ fn main() -> Result<(), Error> {
         let dht = await!(dht::Dht::new(dht_port));
 
         for wg_iface in await!(wg::get_interfaces(netns.clone())).unwrap().into_iter() {
-            let public_addr = Arc::new(Mutex::new(None)); // TODO: use stream instead of mutex
+            let (public_addr_tx, mut public_addr_rx) = futures::sync::mpsc::unbounded();
 
             let sock = tokio::net::UdpSocket::bind(&addr).unwrap();
             let codec = tokio::codec::BytesCodec::new();
@@ -197,9 +195,8 @@ fn main() -> Result<(), Error> {
             let (new_endpoints_tx, mut new_endpoints_rx) = futures::sync::mpsc::unbounded();
 
             let (dht2wg_tx, udp_rx) = inject(udp_rx);
-//            tokio::spawn_async(traffic::forward_outbound(inbound_rx, udp_tx1));
             tokio::spawn_async(traffic::forward_inbound(new_endpoints_tx, udp_rx, inet2stun_tx, udp_tx, wg_port));
-            tokio::spawn_async(stun::run(inet2stun_rx, stun2inet_tx, bind_addr, stun_server.clone(), public_addr.clone()));
+            tokio::spawn_async(stun::run(inet2stun_rx, stun2inet_tx, bind_addr, stun_server.clone(), public_addr_tx));
 
             let local_public_key = await!(wg::local_public_key(netns.clone(), &wg_iface)).unwrap();
 
@@ -207,7 +204,8 @@ fn main() -> Result<(), Error> {
             for remote_public_key in peer_list {
                 info!("Managing peer {} on interface {}.", remote_public_key, wg_iface.clone());
                 let remote_public_key = base64::decode(remote_public_key).unwrap();
-                let public_addr2 = public_addr.clone();
+                let (public_addr_rrx, addr_rx) = public_addr_rx.clone_stream();
+                public_addr_rx = addr_rx;
 
                 let (rx, new_endpoints_rrx) = new_endpoints_rx.clone_stream();
                 new_endpoints_rx = rx;
@@ -216,7 +214,7 @@ fn main() -> Result<(), Error> {
                 let local_public_key2 = local_public_key.clone();
                 let remote_public_key2 = remote_public_key.clone();
                 tokio::spawn_async(async move {
-                    await!(dht2.put_loop(public_addr2, local_public_key2, remote_public_key2))
+                    await!(dht2.put_loop(public_addr_rrx, local_public_key2, remote_public_key2))
                 });
 
                 let dht2 = dht.clone();
