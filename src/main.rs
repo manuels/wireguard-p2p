@@ -22,11 +22,14 @@ extern crate stun3489;
 extern crate opendht;
 
 macro_rules! log_err {
+    ($expr: expr) => ({
+        log_err!($expr, "{:?}")
+    });
     ($expr: expr, $msg: expr) => ({
         if let Err(err) = $expr {
             error!($msg, err);
         }
-    })
+    });
 }
 
 use std::io::Error;
@@ -227,21 +230,26 @@ fn main() -> Result<(), Error> {
                 new_endpoints_rx = rx;
                 
                 let dht2 = dht.clone();
-                let local_public_key2 = local_public_key.clone();
-                let remote_public_key2 = remote_public_key.clone();
                 let shared_key2 = shared_key.clone();
+                let dht_key = dht_encoding::encode_key(&local_public_key, &remote_public_key);
                 tokio::spawn_async(async move {
-                    await!(dht2.put_loop(shared_key2, public_addr_rrx, local_public_key2, remote_public_key2))
+                    await!(dht2.put_loop(shared_key2, dht_key, public_addr_rrx))
+                });
+
+                let (dht_address_tx, dht_address_rx) = futures::sync::mpsc::unbounded();
+
+                let netns2 = netns.clone();
+                let wg_iface2 = wg_iface.clone();
+                let remote_public_key2 = remote_public_key.clone();
+                tokio::spawn_async(async move {
+                    await!(traffic::set_endpoint(netns2, wg_iface2, remote_public_key2, new_endpoints_rrx, dht_address_rx))
                 });
 
                 let dht2 = dht.clone();
                 let dht2wg_ttx = dht2wg_tx.clone();
-                let local_public_key2 = local_public_key.clone();
-                let remote_public_key2 = remote_public_key.clone();
-                let wg_iface = wg_iface.clone();
-                let netns = netns.clone();
+                let dht_key = dht_encoding::encode_key(&remote_public_key, &local_public_key);
                 tokio::spawn_async(async move {
-                    await!(dht2.get_loop(shared_key, netns.clone(), new_endpoints_rrx, local_public_key2, remote_public_key2, &wg_iface, dht2wg_ttx));
+                    await!(dht2.get_loop(shared_key, dht_key, dht_address_tx, dht2wg_ttx));
                 });
             }
 

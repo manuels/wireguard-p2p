@@ -1,13 +1,14 @@
-use std::net::SocketAddr;
+use std::time::Duration;
 use std::time::SystemTime;
+use std::net::SocketAddr;
 
 use tokio::prelude::*;
-use futures::sync::mpsc::UnboundedReceiver;
+use futures::sync::mpsc::UnboundedSender;
+use bytes::Bytes;
 use bytes::BytesMut;
 
 use opendht::OpenDht;
 
-use crate::wg;
 use crate::crypto::Decrypt;
 use crate::crypto::Encrypt;
 use crate::crypto::PrecomputedKey;
@@ -36,76 +37,55 @@ impl Dht {
 
     pub async fn put_loop(&self,
         shared_key: PrecomputedKey,
-        mut stun_addr_rx: impl Stream<Item=SocketAddr, Error=impl std::fmt::Debug> + std::marker::Unpin + 'static,
-        local_public_key: Vec<u8>,
-        remote_public_key: Vec<u8>,
+        dht_key: Bytes,
+        stun_addr_rx: impl Stream<Item=SocketAddr> + std::marker::Unpin + 'static,
     ) {
-        let key = dht_encoding::encode_key(&local_public_key, &remote_public_key);
+        let mut stun_addr_rx = stun_addr_rx.timeout(Duration::from_secs(2 * 60));
 
-        while let Some(res) = await!(stun_addr_rx.next()) {
-            match res {
-                Ok(addr) => {
-                    let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
-                    let value = dht_encoding::encode_value(now, addr);
-                    let ciphertext = value.encrypt(&shared_key);
+        let mut addr = None;
+        while let Some(new_addr) = await!(stun_addr_rx.next()) {
+            // We can ignore errors on res here the receiver cannot fail,
+            // so it must be a timeout.
+            addr = new_addr.ok().or(addr);
 
-                    await!(self.0.put(&key[..], &ciphertext)).unwrap();
-                }
-                Err(err) => error!("{:?}", err)
+            if let Some(addr) = addr {
+                let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+                let value = dht_encoding::encode_value(now, addr);
+                let ciphertext = value.encrypt(&shared_key);
+
+                log_err!(await!(self.0.put(&dht_key[..], &ciphertext)));
             }
         }
     }
 
     pub async fn get_loop<'a>(&'a self,
         shared_key: PrecomputedKey,
-        netns: Option<String>,
-        mut new_endpoints: UnboundedReceiver<(SocketAddr, u16)>,
-        local_public_key: Vec<u8>,
-        remote_public_key: Vec<u8>,
-        wg_iface: &'a str,
+        dht_key: Bytes,
+        mut dht_address_tx: UnboundedSender<SocketAddr>,
         mut dht2wg_tx: impl Sink<SinkItem=(BytesMut, SocketAddr), SinkError=impl std::fmt::Debug> + std::marker::Unpin + 'static,
     ) {
-        let key = dht_encoding::encode_key(&remote_public_key, &local_public_key);
-
-        use std::net::IpAddr;
-        let lo_ip: IpAddr = [127, 0, 0, 1].into();
-
-        let iface = wg_iface.to_string();
-        let pubkey = remote_public_key.clone();
-        let ns = netns.clone();
-        tokio::spawn_async(async move {
-            while let Some(res) = await!(new_endpoints.next()) {
-                match res {
-                    Ok((remote_addr, lo_port)) => {
-                        debug!("Mapping {} to local port {}", remote_addr, lo_port);
-                        await!(wg::set_endpoint(ns.clone(), &iface, &pubkey, (lo_ip, lo_port).into())).unwrap();
-                    },
-                    Err(err) => error!("Error: {:?}", err),
-                }
-            }
-        });
-
         let mut last_time = None;
-        let mut stream = self.0.listen(&key[..]);
+        let mut stream = self.0.listen(&dht_key[..]);
         while let Some(res) = await!(stream.next()) {
             match res {
                 Ok(ciphertext) => {
-                    if let Ok(value) = ciphertext.decrypt(&shared_key) {
-                        if let Ok((time, addr)) = dht_encoding::decode_value(&value) {
-                            if last_time.map(|t| t < time).unwrap_or(true) {
-                                last_time = Some(time);
+                    let dht_value = ciphertext.decrypt(&shared_key).ok()
+                        .and_then(|v| dht_encoding::decode_value(&v).ok());
 
-                                debug!("found DHT value: {:?}", addr);
+                    if let Some((time, addr)) = dht_value {
+                        if last_time < Some(time) {
+                            last_time = Some(time);
+                            debug!("Found DHT value: {:?}", addr);
 
-                                // here we fake a packet from the internet to the wg-p2p daemon
-                                // so a new connection for 'addr' is created and real packages
-                                // will be forwarded to wireguard correctly.
-                                await!(dht2wg_tx.send_async((BytesMut::new(), addr))).unwrap();
-                                //await!(Delay::new(Instant::now() + Duration::from_secs(5))).unwrap();
-                            }
-                        } else {
-                            warn!("Found invalid value");
+                            log_err!(await!(dht_address_tx.send_async(addr.clone())));
+                            
+                            // here we fake a packet from the internet to the wg-p2p daemon
+                            // so a new connection for 'addr' is created and real packages
+                            // will be forwarded to wireguard correctly.
+                            await!(dht2wg_tx.send_async((BytesMut::new(), addr))).unwrap();
                         }
+                    } else {
+                        warn!("Found invalid value in DHT");
                     }
                 }
                 Err(e) => error!("get loop {:?}", e),

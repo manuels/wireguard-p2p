@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
@@ -8,9 +9,12 @@ use tokio::prelude::stream::SplitSink;
 use tokio::codec::BytesCodec;
 use tokio::net::UdpFramed;
 use futures::sync::mpsc::UnboundedSender;
+use futures::sync::mpsc::UnboundedReceiver;
 use futures::sync::mpsc;
 use bytes::Bytes;
 use bytes::BytesMut;
+
+use crate::wg;
 
 type UdpSink = SplitSink<UdpFramed<BytesCodec>>;
 
@@ -81,6 +85,49 @@ pub async fn forward_inbound(
                 let pkt = Bytes::from(pkt);
                 log_err!(await!(via_sock.send_async((pkt, dst))),
                     "lo2wg Send Error: {:?}");
+            }
+        }
+    }
+}
+
+enum WgSetEndpoint {
+    Endpoint((SocketAddr, u16)),
+    DhtAddress(SocketAddr),
+}
+
+pub async fn set_endpoint(
+    netns: Option<String>,
+    wg_iface: String,
+    remote_public_key: Vec<u8>,
+    new_endpoints: UnboundedReceiver<(SocketAddr, u16)>,
+    dht_address_rx: UnboundedReceiver<SocketAddr>,
+) {
+    let lo_ip: IpAddr = [127, 0, 0, 1].into();
+
+    let mut dht_addresses = HashSet::new();
+    let mut set_endpoints = HashMap::new();
+
+    let new_endpoints = new_endpoints.map(|e| WgSetEndpoint::Endpoint(e));
+    let dht_address_rx = dht_address_rx.map(|addr| WgSetEndpoint::DhtAddress(addr));
+
+    let mut stream = new_endpoints.select(dht_address_rx);
+    while let Some(Ok(item)) = await!(stream.next()) {
+        // Err should never happen, because Receiver should never fail
+        let addr = match item {
+            WgSetEndpoint::DhtAddress(addr) => {
+                dht_addresses.insert(addr);
+                addr
+            },
+            WgSetEndpoint::Endpoint((addr, port)) => {
+                set_endpoints.insert(addr, port);
+                addr
+            },
+        };
+
+        if dht_addresses.contains(&addr) {
+            if let Some(lo_port) = set_endpoints.get(&addr) {
+                debug!("Mapping {} to local port {}", addr, lo_port);
+                log_err!(await!(wg::set_endpoint(netns.clone(), &wg_iface, &remote_public_key, (lo_ip, *lo_port).into())));
             }
         }
     }
