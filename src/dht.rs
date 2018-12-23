@@ -8,7 +8,6 @@ use std::net::ToSocketAddrs;
 
 use tokio::timer::Delay;
 use tokio::prelude::*;
-use futures::stream::MergedItem;
 use futures::sync::mpsc::UnboundedReceiver;
 use bytes::BytesMut;
 
@@ -69,7 +68,7 @@ impl Dht {
 
     pub async fn get_loop<'a>(&'a self,
         netns: Option<String>,
-        new_endpoints: UnboundedReceiver<(SocketAddr, u16)>,
+        mut new_endpoints: UnboundedReceiver<(SocketAddr, u16)>,
         local_public_key: Vec<u8>,
         remote_public_key: Vec<u8>,
         wg_iface: &'a str,
@@ -83,11 +82,26 @@ impl Dht {
         log_err!(await!(Delay::new(Instant::now() + Duration::from_secs(10))), "Delay {:?}");
         debug!("Get loop start!");
 
+        let iface = wg_iface.to_string();
+        let pubkey = remote_public_key.clone();
+        let ns = netns.clone();
+        tokio::spawn_async(async move {
+            while let Some(res) = await!(new_endpoints.next()) {
+                match res {
+                    Ok((remote_addr, lo_port)) => {
+                        debug!("Mapping {} to local port {}", remote_addr, lo_port);
+                        await!(wg::set_endpoint(ns.clone(), &iface, &pubkey, (lo_ip, lo_port).into())).unwrap();
+                    },
+                    Err(err) => error!("Error: {:?}", err),
+                }
+            }
+        });
+
         let mut last_time = None;
-        let mut stream = self.0.listen(&key[..]).merge(new_endpoints);
+        let mut stream = self.0.listen(&key[..]);
         while let Some(res) = await!(stream.next()) {
             match res {
-                Ok(MergedItem::First(value)) => {
+                Ok(value) => {
                     if let Ok((time, addr)) = dht_encoding::decode_value(&value) {
                         if last_time.map(|t| t < time).unwrap_or(true) {
                             last_time = Some(time);
@@ -103,35 +117,6 @@ impl Dht {
                         }
                     } else {
                         warn!("Found invalid value");
-                    }
-                }
-                Ok(MergedItem::Second((remote_addr, lo_port))) => {
-                    // TODO: we must set a loopback endpoint
-                    //       for that we must find out the registered loop back device
-                    debug!("Mapping {} to local port {}", remote_addr, lo_port);
-                    await!(wg::set_endpoint(netns.clone(), &wg_iface, &remote_public_key, (lo_ip, lo_port).into())).unwrap();
-                }
-                Ok(MergedItem::Both(value, (remote_addr, lo_port))) => {
-                    {
-                        if let Ok((time, addr)) = dht_encoding::decode_value(&value) {
-                            if last_time.map(|t| t < time).unwrap_or(true) {
-                                last_time = Some(time);
-                                debug!("found addr: {:?}", addr);
-
-                                // here we fake a packet from the internet to the wg-p2p daemon
-                                // so a new connection for 'addr' is created and real packages
-                                // will be forwarded to wireguard correctly.
-                                await!(dht2wg_tx.send_async((BytesMut::new(), addr))).unwrap();
-
-                                await!(Delay::new(Instant::now() + Duration::from_secs(5))).unwrap();
-                            }
-                        } else {
-                            warn!("Found invalid value");
-                        }
-                    }
-                    {
-                        debug!("Mapping {} to local port {}", remote_addr, lo_port);
-                        await!(wg::set_endpoint(netns.clone(), &wg_iface, &remote_public_key, (lo_ip, lo_port).into())).unwrap();
                     }
                 }
                 Err(e) => error!("get loop {:?}", e),
