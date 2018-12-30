@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
 
+use bytes::Bytes;
+use bytes::BytesMut;
 use tokio::prelude::*;
 use tokio::prelude::stream::SplitSink;
 use tokio::codec::BytesCodec;
@@ -11,8 +13,7 @@ use tokio::net::UdpFramed;
 use futures::sync::mpsc::UnboundedSender;
 use futures::sync::mpsc::UnboundedReceiver;
 use futures::sync::mpsc;
-use bytes::Bytes;
-use bytes::BytesMut;
+use sodiumoxide::crypto::box_::PublicKey;
 
 type UdpSink = SplitSink<UdpFramed<BytesCodec>>;
 
@@ -31,17 +32,13 @@ fn create_internal_socket(remote_addr: SocketAddr,
 
     // forward packets from the new loopback socket to the remote peer
     tokio::spawn_async(async move {
-        while let Some(res) = await!(recv.next()) {
-            match res {
-                Err(e) => error!("{:?}", e),
-                Ok((pkt, wg_addr)) => {
-                    let pkt = Bytes::from(pkt);
-                    debug!("LO2OUT {} bytes from {} via lo port {} to {}", pkt.len(), wg_addr, port, remote_addr);
+        while let Some(Ok((pkt, wg_addr))) = await!(recv.next()) {
+            let pkt = Bytes::from(pkt);
+            debug!("LO2OUT {} bytes from {} via lo port {} to {}", pkt.len(), wg_addr, port, remote_addr);
 
-                    await!(outbound.send_async((pkt, remote_addr))).unwrap();
-                }
-            }
+            await!(outbound.send_async((pkt, remote_addr))).unwrap();
         }
+        unreachable!("create_internal_socket");
     });
 
     Ok((send, port))
@@ -57,32 +54,29 @@ pub async fn forward_inbound(
     let mut connections = HashMap::new();
     let dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), wg_port);
 
-    while let Some(res) = await!(udp_rx.next()) {
-        match res {
-            Err(e) => error!("UDP Receive Error: {:?}", e),
-            Ok((pkt, remote_addr)) => {
-                let mut is_new = false;
-                let (via_sock, via_port) = connections
-                    .entry(remote_addr)
-                    .or_insert_with(|| {
-                        is_new = true;
-                        create_internal_socket(remote_addr, udp_tx.clone()).unwrap()
-                    });
+    while let Some(Ok((pkt, remote_addr))) = await!(udp_rx.next()) {
+        let mut is_new = false;
+        let (via_sock, via_port) = connections
+            .entry(remote_addr)
+            .or_insert_with(|| {
+                is_new = true;
+                create_internal_socket(remote_addr, udp_tx.clone()).unwrap()
+            });
 
-                if is_new {
-                    log_err!(await!(new_endpoints_tx.send_async((remote_addr, *via_port))),
-                        "New Endpoint Send Error: {:?}");
-                }
-
-                debug!("IN2LO {} bytes from {} via lo port {} to wg port {}",
-                    pkt.len(), remote_addr, via_port, dst.port());
-
-                log_err!(await!(inet2stun_tx.send_async((pkt.clone(), dst))));
-                let dat = Bytes::from(pkt);
-                log_err!(await!(via_sock.send_async((dat, dst))));
-            }
+        if is_new {
+            log_err!(await!(new_endpoints_tx.send_async((remote_addr, *via_port))),
+                "New Endpoint Send Error: {:?}");
         }
+
+        debug!("IN2LO {} bytes from {} via lo port {} to wg port {}",
+            pkt.len(), remote_addr, via_port, dst.port());
+
+        log_err!(await!(inet2stun_tx.send_async((pkt.clone(), dst))));
+        let dat = Bytes::from(pkt);
+        log_err!(await!(via_sock.send_async((dat, dst))));
     }
+
+    unreachable!("forward_inbound");
 }
 
 enum WgSetEndpoint {
@@ -90,11 +84,9 @@ enum WgSetEndpoint {
     DhtAddress(SocketAddr),
 }
 
-use netlink::WG_KEY_LEN;
-
 pub async fn set_endpoint(
     mut wg_iface: crate::wg::Interface,
-    remote_public_key: [u8; WG_KEY_LEN],
+    remote_public_key: PublicKey,
     new_endpoints: UnboundedReceiver<(SocketAddr, u16)>,
     dht_address_rx: UnboundedReceiver<SocketAddr>,
 ) {
@@ -123,7 +115,7 @@ pub async fn set_endpoint(
         if dht_addresses.contains(&addr) {
             if let Some(lo_port) = set_endpoints.get(&addr) {
                 debug!("Mapping {} to local port {}", addr, lo_port);
-                log_err!(await!(wg_iface.set_endpoint(&remote_public_key, (lo_ip, *lo_port).into())));
+                log_err!(await!(wg_iface.set_endpoint(&remote_public_key[..32], (lo_ip, *lo_port).into())));
             }
         }
     }

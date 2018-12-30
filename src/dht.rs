@@ -24,7 +24,7 @@ impl Dht {
         let dht2 = dht.clone();
         tokio::spawn_async(async move {
             while let Some(next) = dht2.tick() {
-                log_err!(await!(tokio::timer::Delay::new(next)), "{:?}");
+                log_err!(await!(tokio::timer::Delay::new(next)));
             }
             unreachable!("DHT tick loop");
         });

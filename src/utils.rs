@@ -5,6 +5,14 @@ use futures::sync::mpsc;
 use futures::Stream;
 use tokio::prelude::*;
 
+pub fn tokio_try_async<E: std::fmt::Debug>(f: impl std::future::Future<Output=Result<(), E>> + Send + 'static) {
+    tokio::run_async(async move {
+        if let Err(err) = await!(f) {
+            panic!("{:?}", err);
+        }
+    });
+}
+
 /// Convert a nix::Error to a std::io::Error
 pub fn nix2io(error: nix::Error) -> Error {
     match error {

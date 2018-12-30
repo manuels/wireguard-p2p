@@ -52,6 +52,7 @@ mod dht_encoding;
 
 use crate::utils::CloneSink;
 use crate::utils::CloneStream;
+use crate::utils::tokio_try_async;
 
 #[derive(Debug, StructOpt)]
 #[structopt(name = "wg-p2p", about = "A peer-to-peer daemon for wireguard.")]
@@ -111,23 +112,24 @@ fn main() -> Result<(), Error> {
 
     let netns = opt.netns;
     let dht_port = opt.dht_port;
-    let bootstrap_addrs: Vec<_> = opt.bootstrap_addrs.to_socket_addrs().unwrap().collect();
+    let bootstrap_addrs: Vec<_> = opt.bootstrap_addrs.to_socket_addrs()?.collect();
 
-    tokio::run_async(async move {
-        let family = await!(crate::wg::Interface::get_family("wireguard")).unwrap();
+    tokio_try_async(async move {
+        let family = await!(crate::wg::Interface::get_family("wireguard"))?;
         let family = family.unwrap_or_else(|| panic!("Wireguard kernel module not loaded"));
-        let ifaces = await!(crate::wg::Interface::get_wg_interfaces(netns.clone())).unwrap();
+        let ifaces = await!(crate::wg::Interface::get_wg_interfaces(netns.clone()))?;
 
         let mut pairs = vec![];
         for i in ifaces {
             // this has to run first in the tokio loop, because it switches the
             // network namespace back and forth
-            let mut wg_iface = crate::wg::Interface::new(family, netns.clone(), i.ifindex).unwrap();
-            let wg_cfg = await!(wg_iface.get_config()).unwrap();
+            let mut wg_iface = crate::wg::Interface::new(family, netns.clone(), i.ifindex)?;
+            let wg_cfg = await!(wg_iface.get_config())?;
 
             let peer_list: Vec<_> = wg_cfg.peers().map(|p| {
                 let wg_iface = crate::wg::Interface::new(family, netns.clone(), i.ifindex).unwrap();
-                (wg_iface, *p.public_key())
+                let public_key  = PublicKey::from_slice(p.public_key()).unwrap();
+                (wg_iface, public_key)
             }).collect();
 
             pairs.push((wg_cfg, peer_list));
@@ -136,57 +138,54 @@ fn main() -> Result<(), Error> {
         let dht = await!(dht::Dht::new(&bootstrap_addrs, dht_port));
 
         for (wg_cfg, peer_list) in pairs.into_iter() {
-            let (public_addr_tx, mut public_addr_rx) = futures::sync::mpsc::unbounded();
-
-            let sock = tokio::net::UdpSocket::bind(&addr).unwrap();
+            let sock = tokio::net::UdpSocket::bind(&addr)?;
             let codec = tokio::codec::BytesCodec::new();
             let (udp_tx, udp_rx) = tokio::net::UdpFramed::new(sock, codec).split();
+
+            let (inet2stun_tx,     inet2stun_rx)         = futures::sync::mpsc::unbounded();
+            let (public_addr_tx,   mut public_addr_rx)   = futures::sync::mpsc::unbounded();
+            let (new_endpoints_tx, mut new_endpoints_rx) = futures::sync::mpsc::unbounded();
+
+            let (dht2wg_tx, udp_rx) = inject(udp_rx);
+            let (udp_tx, stun2inet_tx) = udp_tx.clone_sink();
+
+            let secret_key = wg_cfg.private_key();
+            let secret_key = SecretKey::from_slice(secret_key).unwrap();
+            let local_public_key = secret_key.public_key();
 
             let wg_port = wg_cfg.listen_port();
             debug!("Wireguard Port {}", wg_port);
 
-            let (inet2stun_tx, inet2stun_rx) = futures::sync::mpsc::unbounded();
-            let (udp_tx, stun2inet_tx) = udp_tx.clone_sink();
-
-            let (new_endpoints_tx, mut new_endpoints_rx) = futures::sync::mpsc::unbounded();
-
-            let (dht2wg_tx, udp_rx) = inject(udp_rx);
             tokio::spawn_async(traffic::forward_inbound(new_endpoints_tx, udp_rx, inet2stun_tx, udp_tx, wg_port));
             tokio::spawn_async(stun::run(inet2stun_rx, stun2inet_tx, bind_addr, stun_server.clone(), public_addr_tx));
 
-            let local_secret_key = wg_cfg.private_key();
-            let local_public_key = wg_cfg.public_key();
-
             for (wg_iface, remote_public_key) in peer_list.into_iter() {
                 info!("Managing peer {} on interface #{}.", base64::encode(&remote_public_key[..]), wg_iface.ifindex);
-                let secret_key = SecretKey::from_slice(&local_secret_key[..]).unwrap();
-                let public_key = PublicKey::from_slice(&remote_public_key[..]).unwrap();
-                let shared_key = box_::precompute(&public_key, &secret_key);
 
-                let (public_addr_rrx, addr_rx) = public_addr_rx.clone_stream();
-                public_addr_rx = addr_rx;
+                let (dht_address_tx, dht_address_rx) = futures::sync::mpsc::unbounded();
+
+                let (public_addr_rrx, rx) = public_addr_rx.clone_stream();
+                public_addr_rx = rx;
 
                 let (rx, new_endpoints_rrx) = new_endpoints_rx.clone_stream();
                 new_endpoints_rx = rx;
                 
+                let shared_key = box_::precompute(&remote_public_key, &secret_key);
+                let dht_put_key = dht_encoding::encode_key(&local_public_key, &remote_public_key);
+                let dht_get_key = dht_encoding::encode_key(&remote_public_key, &local_public_key);
+
+                tokio::spawn_async(traffic::set_endpoint(wg_iface, remote_public_key, new_endpoints_rrx, dht_address_rx));
+
                 let dht2 = dht.clone();
                 let shared_key2 = shared_key.clone();
-                let dht_key = dht_encoding::encode_key(&local_public_key[..], &remote_public_key[..]);
                 tokio::spawn_async(async move {
-                    await!(dht2.put_loop(shared_key2, dht_key, public_addr_rrx))
-                });
-
-                let (dht_address_tx, dht_address_rx) = futures::sync::mpsc::unbounded();
-
-                tokio::spawn_async(async move {
-                    await!(traffic::set_endpoint(wg_iface, remote_public_key, new_endpoints_rrx, dht_address_rx))
+                    await!(dht2.put_loop(shared_key2, dht_put_key, public_addr_rrx))
                 });
 
                 let dht2 = dht.clone();
                 let dht2wg_ttx = dht2wg_tx.clone();
-                let dht_key = dht_encoding::encode_key(&remote_public_key[..], &local_public_key[..]);
                 tokio::spawn_async(async move {
-                    await!(dht2.get_loop(shared_key, dht_key, dht_address_tx, dht2wg_ttx));
+                    await!(dht2.get_loop(shared_key, dht_get_key, dht_address_tx, dht2wg_ttx));
                 });
             }
 
@@ -202,6 +201,8 @@ fn main() -> Result<(), Error> {
                 }
             });
         }
+
+        Ok(()) as Result<(), std::io::Error>
     });
 
     Ok(())

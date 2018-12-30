@@ -50,10 +50,11 @@ impl Interface {
     }
 
     pub async fn set_endpoint<'a>(&'a mut self,
-        remote_public_key: &'a [u8; WG_KEY_LEN],
+        remote_public_key: &'a [u8],
         addr: SocketAddr
     ) -> Result<(), Error>
     {
+        assert_eq!(remote_public_key.len(), WG_KEY_LEN);
         await!(self.sock.set_wg_endpoint(&self.wg_family,
             IfaceBy::Index(self.ifindex),
             remote_public_key,

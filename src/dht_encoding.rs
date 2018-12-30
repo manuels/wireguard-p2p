@@ -11,11 +11,19 @@ use bytes::Bytes;
 use bytes::BufMut;
 use byteorder::{BigEndian, ReadBytesExt};
 
-pub fn encode_key(key1: &[u8], key2: &[u8]) -> Bytes {
+use netlink::WG_KEY_LEN;
+
+pub fn encode_key<T, U>(key1: T, key2: U) -> Bytes
+    where T: AsRef<[u8]>,
+          U: AsRef<[u8]>
+{
+    assert_eq!(key1.as_ref().len(), WG_KEY_LEN);
+    assert_eq!(key2.as_ref().len(), WG_KEY_LEN);
+
     let mut key = BytesMut::with_capacity(256);
     key.put("wg-p2p-v3");
-    key.put_slice(key1);
-    key.put_slice(key2);
+    key.put_slice(key1.as_ref());
+    key.put_slice(key2.as_ref());
     key.freeze()
 }
 
