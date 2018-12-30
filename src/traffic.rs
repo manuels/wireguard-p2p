@@ -14,8 +14,6 @@ use futures::sync::mpsc;
 use bytes::Bytes;
 use bytes::BytesMut;
 
-use crate::wg;
-
 type UdpSink = SplitSink<UdpFramed<BytesCodec>>;
 
 /// Create a new loopback socket for a new peer to forward packets between the
@@ -63,17 +61,14 @@ pub async fn forward_inbound(
         match res {
             Err(e) => error!("UDP Receive Error: {:?}", e),
             Ok((pkt, remote_addr)) => {
-                log_err!(await!(inet2stun_tx.send_async((pkt.clone(), dst))), "inet2stun_tx Send Error: {:?}");
-
-                // TODO: cache this lookup?
                 let mut is_new = false;
                 let (via_sock, via_port) = connections
                     .entry(remote_addr)
                     .or_insert_with(|| {
                         is_new = true;
                         create_internal_socket(remote_addr, udp_tx.clone()).unwrap()
-                        // TODO: send to broadcast (to dht)
                     });
+
                 if is_new {
                     log_err!(await!(new_endpoints_tx.send_async((remote_addr, *via_port))),
                         "New Endpoint Send Error: {:?}");
@@ -82,9 +77,9 @@ pub async fn forward_inbound(
                 debug!("IN2LO {} bytes from {} via lo port {} to wg port {}",
                     pkt.len(), remote_addr, via_port, dst.port());
 
-                let pkt = Bytes::from(pkt);
-                log_err!(await!(via_sock.send_async((pkt, dst))),
-                    "lo2wg Send Error: {:?}");
+                log_err!(await!(inet2stun_tx.send_async((pkt.clone(), dst))));
+                let dat = Bytes::from(pkt);
+                log_err!(await!(via_sock.send_async((dat, dst))));
             }
         }
     }
@@ -95,10 +90,11 @@ enum WgSetEndpoint {
     DhtAddress(SocketAddr),
 }
 
+use netlink::WG_KEY_LEN;
+
 pub async fn set_endpoint(
-    netns: Option<String>,
-    wg_iface: String,
-    remote_public_key: Vec<u8>,
+    mut wg_iface: crate::wg::Interface,
+    remote_public_key: [u8; WG_KEY_LEN],
     new_endpoints: UnboundedReceiver<(SocketAddr, u16)>,
     dht_address_rx: UnboundedReceiver<SocketAddr>,
 ) {
@@ -107,8 +103,8 @@ pub async fn set_endpoint(
     let mut dht_addresses = HashSet::new();
     let mut set_endpoints = HashMap::new();
 
-    let new_endpoints = new_endpoints.map(|e| WgSetEndpoint::Endpoint(e));
-    let dht_address_rx = dht_address_rx.map(|addr| WgSetEndpoint::DhtAddress(addr));
+    let new_endpoints = new_endpoints.map(WgSetEndpoint::Endpoint);
+    let dht_address_rx = dht_address_rx.map(WgSetEndpoint::DhtAddress);
 
     let mut stream = new_endpoints.select(dht_address_rx);
     while let Some(Ok(item)) = await!(stream.next()) {
@@ -127,7 +123,7 @@ pub async fn set_endpoint(
         if dht_addresses.contains(&addr) {
             if let Some(lo_port) = set_endpoints.get(&addr) {
                 debug!("Mapping {} to local port {}", addr, lo_port);
-                log_err!(await!(wg::set_endpoint(netns.clone(), &wg_iface, &remote_public_key, (lo_ip, *lo_port).into())));
+                log_err!(await!(wg_iface.set_endpoint(&remote_public_key, (lo_ip, *lo_port).into())));
             }
         }
     }

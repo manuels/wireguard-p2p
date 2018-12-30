@@ -27,21 +27,16 @@ pub async fn run(
         let stream = stream.map_err(|_|
             Error::new(ErrorKind::InvalidInput, "TODO")
         );
-        let stream = stream.timeout(Duration::from_secs(1));
+        let stream = stream.timeout(Duration::from_secs(3));
         let stream = stream.map_err(|e| e.into_inner().unwrap_or_else(||
             Error::new(ErrorKind::TimedOut, ""))
         );
 
         let stream = stream.filter_map(|(mut pkt, src)| {
-            if let Ok(decoded) = StunCodec.decode(&mut pkt) {
-                decoded.map(|data| (data, src))
-            } else {
-                None
-            }
+            StunCodec.decode(&mut pkt).ok().and_then(|v| v).map(|data| (data, src))
         });
 
         let (tx, rx) = futures::sync::mpsc::unbounded();
-
         let inet_tx = tx.sink_map_err(|_| {
             Error::new(ErrorKind::InvalidInput, "TODO")
         });

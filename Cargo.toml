@@ -4,6 +4,10 @@ version = "0.1.0"
 authors = ["Manuel Schölling <manuel.schoelling@gmx.de>"]
 edition = "2018"
 
+[[bin]]
+name = "wg-p2p"
+path = "src/main.rs"
+
 [dependencies]
 tokio = {version = "0.1", features = ["async-await-preview"]}
 bytes = "*"
@@ -13,13 +17,12 @@ futures = "*"
 rustun = "*"
 stun3489 = { path = "../stun3489" }
 opendht = { path = "../opendht" }
+netlink = { path = "../netlink" }
 byteorder = "*"
 base64 = "*"
 tokio-process = "*"
 structopt = { version = "0.2", default-features = false }
-serde = "*"
-serde_derive = "*"
-serde_ini = "*"
 clap = "*"
 regex = "*"
 sodiumoxide = "*"
+nix = "*"

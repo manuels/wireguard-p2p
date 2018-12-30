@@ -1,6 +1,19 @@
+use std::io::Error;
+use std::io::ErrorKind;
+
 use futures::sync::mpsc;
 use futures::Stream;
 use tokio::prelude::*;
+
+/// Convert a nix::Error to a std::io::Error
+pub fn nix2io(error: nix::Error) -> Error {
+    match error {
+        nix::Error::Sys(errno) => Error::from_raw_os_error(errno as _),
+        nix::Error::InvalidPath => Error::new(ErrorKind::InvalidInput, "Invalid Path"),
+        nix::Error::InvalidUtf8 => Error::new(ErrorKind::InvalidInput, "Invalid Utf8"),
+        nix::Error::UnsupportedOperation => Error::new(ErrorKind::Other, "Invalid Operation"),
+    }
+}
 
 pub trait CloneStream: Stream
 where

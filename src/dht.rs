@@ -77,8 +77,8 @@ impl Dht {
                             last_time = Some(time);
                             debug!("Found DHT value: {:?}", addr);
 
-                            log_err!(await!(dht_address_tx.send_async(addr.clone())));
-                            
+                            log_err!(await!(dht_address_tx.send_async(addr)));
+
                             // here we fake a packet from the internet to the wg-p2p daemon
                             // so a new connection for 'addr' is created and real packages
                             // will be forwarded to wireguard correctly.
