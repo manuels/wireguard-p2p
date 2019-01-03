@@ -11,6 +11,12 @@ pub use sodiumoxide::crypto::box_::PrecomputedKey;
 
 static INIT: Once = ONCE_INIT;
 
+pub fn rand(size: usize) -> Vec<u8> {
+    INIT.call_once(|| sodiumoxide::init().unwrap());
+
+    sodiumoxide::randombytes::randombytes(size)
+}
+
 pub trait Encrypt {
     fn encrypt(&self, key: &PrecomputedKey) -> BytesMut;
 }

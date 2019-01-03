@@ -1,11 +1,11 @@
 use std::io::Error;
 use std::net::SocketAddr;
 
-use netlink::NlSocket;
-use netlink::Family;
-use netlink::IfaceBy;
-use netlink::Protocol;
-use netlink::WG_KEY_LEN;
+use netlink_wg::NlSocket;
+use netlink_wg::Family;
+use netlink_wg::IfaceBy;
+use netlink_wg::Protocol;
+pub use netlink_wg::WG_KEY_LEN;
 
 use crate::utils::nix2io;
 
@@ -35,7 +35,7 @@ impl Interface {
         await!(sock.get_family(name))
     }
 
-    pub async fn get_wg_interfaces(netns: Option<String>) -> std::io::Result<Vec<netlink::routes::Interface>> {
+    pub async fn get_wg_interfaces(netns: Option<String>) -> std::io::Result<Vec<netlink_wg::routes::Interface>> {
         let mut sock = if let Some(netns) = netns {
             NlSocket::new_in_netns(netns, Protocol::Route).map_err(nix2io)?
         } else {
@@ -61,7 +61,7 @@ impl Interface {
             addr))
     }
 
-    pub async fn get_config(&mut self) -> std::io::Result<netlink::wg::IfConfig> {
+    pub async fn get_config(&mut self) -> std::io::Result<netlink_wg::wg::IfConfig> {
         await!(self.sock.get_wg_device(&self.wg_family, IfaceBy::Index(self.ifindex)))
     }
 }

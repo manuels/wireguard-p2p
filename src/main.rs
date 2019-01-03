@@ -5,15 +5,12 @@
 
 #[macro_use] extern crate tokio;
 extern crate futures;
-extern crate tokio_process;
 extern crate bytes;
 #[macro_use] extern crate log;
 extern crate env_logger;
 extern crate base64;
-extern crate structopt;
-extern crate clap;
-extern crate regex;
 extern crate sodiumoxide;
+#[macro_use] extern crate clap;
 
 extern crate stun3489;
 extern crate opendht;
@@ -40,10 +37,9 @@ use sodiumoxide::crypto::box_;
 use sodiumoxide::crypto::box_::PublicKey;
 use sodiumoxide::crypto::box_::SecretKey;
 
-use structopt::StructOpt;
-
 mod wg;
 mod dht;
+mod args;
 mod stun;
 mod utils;
 mod crypto;
@@ -53,28 +49,6 @@ mod dht_encoding;
 use crate::utils::CloneSink;
 use crate::utils::CloneStream;
 use crate::utils::tokio_try_async;
-
-#[derive(Debug, StructOpt)]
-#[structopt(name = "wg-p2p", about = "A peer-to-peer daemon for wireguard.")]
-struct CmdOpt {
-    #[structopt(short = "v", long = "verbose")]
-    verbose: bool,
-
-    #[structopt(short = "n", long = "netns")]
-    netns: Option<String>,
-
-    #[structopt(short = "p", long = "peer")]
-    peer: Option<String>,
-
-    #[structopt(long = "stun", default_value = "stun.wtfismyip.com:3478")]
-    stun_server: String,
-
-    #[structopt(long = "dht-port", default_value = "4222")]
-    dht_port: u16,
-
-    #[structopt(long = "bootstrap", default_value = "bootstrap.ring.cx:4222")]
-    bootstrap_addrs: String,
-}
 
 fn inject<T>(mut stream: impl Stream<Item=T, Error=impl std::fmt::Debug + Send> + std::marker::Unpin + Send + 'static)
     -> (impl Sink<SinkItem=T, SinkError=impl std::fmt::Debug> + Clone, impl Stream<Item=T, Error=impl std::fmt::Debug>)
@@ -95,9 +69,9 @@ fn inject<T>(mut stream: impl Stream<Item=T, Error=impl std::fmt::Debug + Send> 
 }
 
 fn main() -> Result<(), Error> {
-    let opt = CmdOpt::from_args();
-
-    if opt.verbose {
+    let args = crate::args::CmdArgs::parse();
+    
+    if args.verbose {
         log::set_max_level(log::LevelFilter::Debug);
     } else {
         log::set_max_level(log::LevelFilter::Info);
@@ -108,34 +82,60 @@ fn main() -> Result<(), Error> {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0);
 
     let bind_addr = SocketAddr::from(([0, 0, 0, 0], 0));
-    let stun_server = opt.stun_server;
+    let stun_server = args.stun_server.clone();
 
-    let netns = opt.netns;
-    let dht_port = opt.dht_port;
-    let bootstrap_addrs: Vec<_> = opt.bootstrap_addrs.to_socket_addrs()?.collect();
+    let dht_port = args.dht_port;
+    let bootstrap_addrs: Vec<_> = args.bootstrap_addrs.to_socket_addrs()?.collect();
 
     tokio_try_async(async move {
+        let dht = await!(dht::Dht::new(&bootstrap_addrs, dht_port))?;
+
         let family = await!(crate::wg::Interface::get_family("wireguard"))?;
         let family = family.unwrap_or_else(|| panic!("Wireguard kernel module not loaded"));
-        let ifaces = await!(crate::wg::Interface::get_wg_interfaces(netns.clone()))?;
 
-        let mut pairs = vec![];
-        for i in ifaces {
+        let mut all_ifaces = await!(crate::wg::Interface::get_wg_interfaces(args.default_netns.clone()))?;
+
+        let ifaces: Vec<_> = if let Some(ifargs) = args.interfaces {
+            let ifaces: Vec<_> = ifargs.iter().map(|iface| {
+                let (j, _) = all_ifaces.iter().enumerate().filter(|(_k, i)| i.ifname == iface.ifname)
+                    .next().unwrap_or_else(|| panic!("network interface {} unknown", iface.ifname));
+                all_ifaces.remove(j)
+            }).collect();
+            ifaces.into_iter().zip(ifargs.into_iter()).collect()
+        } else {
+            let ifargs: Vec<_> = all_ifaces.iter().map(|iface| {
+                crate::args::InterfaceArgs {
+                    ifname: iface.ifname.clone(),
+                    netns: args.default_netns.clone(),
+                    peers: None,
+                }
+            }).collect();
+            all_ifaces.into_iter().zip(ifargs.into_iter()).collect()
+        };
+
+        let mut pairs: Vec<(_, Vec<_>)> = vec![];
+        for (iface, args) in ifaces {
             // this has to run first in the tokio loop, because it switches the
             // network namespace back and forth
-            let mut wg_iface = crate::wg::Interface::new(family, netns.clone(), i.ifindex)?;
+            let mut wg_iface = crate::wg::Interface::new(family, args.netns.clone(), iface.ifindex)?;
             let wg_cfg = await!(wg_iface.get_config())?;
 
-            let peer_list: Vec<_> = wg_cfg.peers().map(|p| {
-                let wg_iface = crate::wg::Interface::new(family, netns.clone(), i.ifindex).unwrap();
-                let public_key  = PublicKey::from_slice(p.public_key()).unwrap();
-                (wg_iface, public_key)
-            }).collect();
+            let peer_list = if let Some(ref peer_list) = args.peers {
+                peer_list.iter().map(|s| {
+                    let p = PublicKey::from_slice(&s).unwrap();
+                    let wg_iface = crate::wg::Interface::new(family, args.netns.clone(), iface.ifindex).unwrap();
+                    (wg_iface, p)
+                }).collect()
+            } else {
+                wg_cfg.peers().map(|s| {
+                    let p = PublicKey::from_slice(s.public_key()).unwrap();
+                    let wg_iface = crate::wg::Interface::new(family, args.netns.clone(), iface.ifindex).unwrap();
+                    (wg_iface, p)
+                }).collect()
+            };
 
             pairs.push((wg_cfg, peer_list));
-        }
-
-        let dht = await!(dht::Dht::new(&bootstrap_addrs, dht_port));
+        };
 
         for (wg_cfg, peer_list) in pairs.into_iter() {
             let sock = tokio::net::UdpSocket::bind(&addr)?;
@@ -171,21 +171,21 @@ fn main() -> Result<(), Error> {
                 new_endpoints_rx = rx;
                 
                 let shared_key = box_::precompute(&remote_public_key, &secret_key);
-                let dht_put_key = dht_encoding::encode_key(&local_public_key, &remote_public_key);
-                let dht_get_key = dht_encoding::encode_key(&remote_public_key, &local_public_key);
+                let dht_put_key = dht_encoding::encode_public_keys(&local_public_key, &remote_public_key);
+                let dht_get_key = dht_encoding::encode_public_keys(&remote_public_key, &local_public_key);
 
                 tokio::spawn_async(traffic::set_endpoint(wg_iface, remote_public_key, new_endpoints_rrx, dht_address_rx));
 
                 let dht2 = dht.clone();
                 let shared_key2 = shared_key.clone();
                 tokio::spawn_async(async move {
-                    await!(dht2.put_loop(shared_key2, dht_put_key, public_addr_rrx))
+                    await!(dht2.put_addr_loop(shared_key2, dht_put_key, public_addr_rrx))
                 });
 
                 let dht2 = dht.clone();
                 let dht2wg_ttx = dht2wg_tx.clone();
                 tokio::spawn_async(async move {
-                    await!(dht2.get_loop(shared_key, dht_get_key, dht_address_tx, dht2wg_ttx));
+                    await!(dht2.get_addr_loop(shared_key, dht_get_key, dht_address_tx, dht2wg_ttx));
                 });
             }
 

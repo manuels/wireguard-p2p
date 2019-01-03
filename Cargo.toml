@@ -1,28 +1,42 @@
+cargo-features = ["default-run"]
+
 [package]
 name = "wireguard-p2p"
-version = "0.1.0"
+version = "0.1.990"
 authors = ["Manuel Schölling <manuel.schoelling@gmx.de>"]
 edition = "2018"
+default-run = "wg-p2p"
+description = "A WireGuard peer-to-peer client"
+license = "GPL-3.0"
+documentation = "https://docs.rs/wireguard-p2p"
+repository = "https://github.com/manuels/wireguard-p2p"
+readme = "README.md"
 
 [[bin]]
 name = "wg-p2p"
 path = "src/main.rs"
 
+[[bin]]
+name = "wg-exchange"
+path = "src/exchange.rs"
+
 [dependencies]
 tokio = {version = "0.1", features = ["async-await-preview"]}
-bytes = "*"
-env_logger = "*"
-log = "*"
-futures = "*"
-rustun = "*"
-stun3489 = { path = "../stun3489" }
-opendht = { path = "../opendht" }
-netlink = { path = "../netlink" }
-byteorder = "*"
-base64 = "*"
-tokio-process = "*"
-structopt = { version = "0.2", default-features = false }
-clap = "*"
-regex = "*"
-sodiumoxide = "*"
-nix = "*"
+bytes = "0.4.11"
+env_logger = "0.6.0"
+log = "0.4.6"
+futures = "0.1.25"
+stun3489 = "0.4.4" # { path = "../stun3489" }
+opendht = "0.1.0" # { path = "../opendht" }
+netlink-wg = "0.1.0" # { path = "../netlink" }
+byteorder = "1.2.7"
+base64 = "0.10.0"
+sodiumoxide = "0.2.0"
+nix = "0.12.0"
+mnemonic = "1.0.1"
+drunken_bishop = "0.1.2"
+
+[dependencies.clap]
+version = "2.32.0"
+default-features = false
+features = [ "suggestions" ]
