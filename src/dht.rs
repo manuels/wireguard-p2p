@@ -1,3 +1,4 @@
+use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 use std::time::Instant;
@@ -14,13 +15,13 @@ use opendht::OpenDht;
 use crate::crypto::Decrypt;
 use crate::crypto::Encrypt;
 use crate::crypto::PrecomputedKey;
-use crate::dht_encoding;
+use crate::p2p::encoding;
 
 #[derive(Clone)]
 pub struct Dht(OpenDht);
 
 impl Dht {
-    pub async fn new(bootstrap_addrs: &[SocketAddr], port: u16) -> std::io::Result<Dht> {
+    pub async fn new(bootstrap_addrs: &[SocketAddr], port: u16) -> io::Result<Dht> {
         let dht = OpenDht::new(port)?;
 
         let dht2 = dht.clone();
@@ -37,6 +38,23 @@ impl Dht {
         Ok(Dht(dht))
     }
 
+    pub async fn put_key_loop<'a>(&'a self,
+        key: &'a [u8],
+        value: &'a [u8])
+    {
+        let mut interval = Interval::new(Instant::now(), Duration::from_secs(60));
+
+        while let Some(Ok(_)) = await!(interval.next()) {
+            log_err!(await!(self.0.put(key, &value)));
+        }
+    }
+
+    pub fn listen<'a>(&'a self, dht_key: &'a [u8])
+        -> impl Stream<Item=Vec<u8>>
+    {
+        self.0.listen(dht_key)
+    }
+    
     pub async fn put_addr_loop(&self,
         shared_key: PrecomputedKey,
         dht_key: Bytes,
@@ -50,14 +68,17 @@ impl Dht {
             // so it must be a timeout.
             addr = new_addr.ok().or(addr);
 
+            println!("publishing {:?}", addr);
             if let Some(addr) = addr {
                 let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
-                let value = dht_encoding::encode_addr(now, addr);
+                let value = encoding::encode_addr(now, addr);
                 let ciphertext = value.encrypt(&shared_key);
 
                 log_err!(await!(self.0.put(&dht_key[..], &ciphertext)));
             }
         }
+
+        unreachable!()
     }
 
     pub async fn get_addr_loop<'a>(&'a self,
@@ -72,7 +93,7 @@ impl Dht {
             match res {
                 Ok(ciphertext) => {
                     let dht_value = ciphertext.decrypt(&shared_key).ok()
-                        .and_then(|v| dht_encoding::decode_addr(&v).ok());
+                        .and_then(|v| encoding::decode_addr(&v).ok());
 
                     if let Some((time, addr)) = dht_value {
                         if last_time < Some(time) {
@@ -95,22 +116,5 @@ impl Dht {
         }
     
         unreachable!("DHT listen() should never end!")
-    }
-
-    pub async fn put_key_loop<'a>(&'a self,
-        key: &'a [u8],
-        value: &'a [u8])
-    {
-        let mut interval = Interval::new(Instant::now(), Duration::from_secs(60));
-
-        while let Some(Ok(_)) = await!(interval.next()) {
-            log_err!(await!(self.0.put(key, &value)));
-        }
-    }
-
-    pub fn listen<'a>(&'a self, dht_key: &'a [u8])
-        -> impl Stream<Item=Vec<u8>>
-    {
-        self.0.listen(dht_key)
     }
 }

@@ -14,11 +14,11 @@ readme = "README.md"
 
 [[bin]]
 name = "wg-p2p"
-path = "src/main.rs"
+path = "src/main_p2p.rs"
 
 [[bin]]
 name = "wg-exchange"
-path = "src/exchange.rs"
+path = "src/main_exchange.rs"
 
 [dependencies]
 tokio = {version = "0.1", features = ["async-await-preview"]}
@@ -28,7 +28,8 @@ log = "0.4.6"
 futures = "0.1.25"
 stun3489 = "0.4.4" # { path = "../stun3489" }
 opendht = "0.1.0" # { path = "../opendht" }
-netlink-wg = "0.1.0" # { path = "../netlink" }
+#netlink-wg = "0.1.0" # { path = "../netlink" }
+netlink-wg = { path = "../netlink" }
 byteorder = "1.2.7"
 base64 = "0.10.0"
 sodiumoxide = "0.2.0"

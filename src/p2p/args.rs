@@ -60,8 +60,8 @@ impl CmdArgs {
                 .multiple(true))
             .get_matches();
 
-        let iface_iter = if let Some(indices) = m.indices_of("iface") {
-            indices.zip(m.values_of("iface").unwrap()).collect()
+        let iface_iter = if let Some(indices) = m.indices_of("ifname") {
+            indices.zip(m.values_of("ifname").unwrap()).collect()
         } else {
             vec![]
         };
@@ -122,12 +122,8 @@ impl CmdArgs {
                     default_peers.push(peer);
                 }
             }
-            let peers = if peers.is_empty() {
-                if default_peers.is_empty() {
-                    Some(default_peers.clone())
-                } else {
-                    None
-                }
+            let peers = if peers.is_empty() && !default_peers.is_empty() {
+                Some(default_peers.clone())
             } else {
                 None
             };
@@ -145,55 +141,6 @@ impl CmdArgs {
             verbose: m.is_present("verbose"),
             interfaces: if args.is_empty() { None } else { Some(args) },
             stun_server: value_t!(m, "stun_server", String).unwrap(),
-            dht_port: value_t!(m, "dht_port", u16).unwrap(),
-            bootstrap_addrs: value_t!(m, "dht_supernode", String).unwrap(),
-        }
-    }
-}
-
-pub struct CmdExchangeArgs {
-    pub netns: Option<String>,
-    pub ifname: Option<String>,
-    pub verbose: bool,
-    pub dht_port: u16,
-    pub bootstrap_addrs: String,
-}
-
-impl CmdExchangeArgs {
-    pub fn parse() -> CmdExchangeArgs {
-        let m = App::new("wg-exchange")
-            .version("0.1.990")
-            .about("Exchange WireGuard public keys")
-            .arg(Arg::with_name("verbose")
-                .short("v")
-                .long("verbose")
-                .help("Be more verbose"))
-            .arg(Arg::with_name("dht_port")
-                .short("D")
-                .long("dht")
-                .default_value("4222")
-                .help("Client port for OpenDHT"))
-            .arg(Arg::with_name("dht_supernode")
-                .short("B")
-                .long("bootstrap")
-                .help("Bootstrap using this OpenDHT supernode")
-                .default_value("bootstrap.ring.cx:4222"))
-            .arg(Arg::with_name("netns")
-                .help("Linux network namespace of the WireGuard interface [default: none]")
-                .short("N")
-                .long("netns")
-                .takes_value(true))
-            .arg(Arg::with_name("ifname")
-                .help("Network interface to manage")
-                .short("i")
-                .long("iface")
-                .takes_value(true))
-            .get_matches();
-
-        CmdExchangeArgs {
-            verbose: m.is_present("verbose"),
-            ifname: m.value_of("ifname").map(|s| s.to_string()),
-            netns: m.value_of("netns").map(|s| s.to_string()),
             dht_port: value_t!(m, "dht_port", u16).unwrap(),
             bootstrap_addrs: value_t!(m, "dht_supernode", String).unwrap(),
         }

@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
+use std::io;
 
 use bytes::Bytes;
 use bytes::BytesMut;
@@ -21,22 +22,22 @@ type UdpSink = SplitSink<UdpFramed<BytesCodec>>;
 /// public socket and the loopback wireguard socket
 fn create_internal_socket(remote_addr: SocketAddr,
     mut outbound: mpsc::UnboundedSender<(Bytes, SocketAddr)>)
-    -> std::io::Result<(UdpSink, u16)>
+    -> io::Result<(UdpSink, u16)>
 {
-    let loop_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0);
+    let loop_addr = SocketAddr::new([127, 0, 0, 1].into(), 0);
     let sock = tokio::net::UdpSocket::bind(&loop_addr)?;
     let port = sock.local_addr()?.port();
-    
+
     let codec = BytesCodec::new();
     let (send, mut recv) = UdpFramed::new(sock, codec).split();
 
     // forward packets from the new loopback socket to the remote peer
     tokio::spawn_async(async move {
-        while let Some(Ok((pkt, wg_addr))) = await!(recv.next()) {
-            let pkt = Bytes::from(pkt);
-            debug!("LO2OUT {} bytes from {} via lo port {} to {}", pkt.len(), wg_addr, port, remote_addr);
+        while let Some(Ok((pkt, _wg_addr))) = await!(recv.next()) {
+            let pkt = pkt.freeze();
+//            debug!("LO2OUT {} bytes from {} via lo port {} to {}", pkt.len(), wg_addr, port, remote_addr);
 
-            await!(outbound.send_async((pkt, remote_addr))).unwrap();
+            log_err!(await!(outbound.send_async((pkt, remote_addr))));
         }
         unreachable!("create_internal_socket");
     });
@@ -52,7 +53,7 @@ pub async fn forward_inbound(
     wg_port: u16)
 {
     let mut connections = HashMap::new();
-    let dst = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), wg_port);
+    let dst = SocketAddr::new([127, 0, 0, 1].into(), wg_port);
 
     while let Some(Ok((pkt, remote_addr))) = await!(udp_rx.next()) {
         let mut is_new = false;
@@ -68,12 +69,13 @@ pub async fn forward_inbound(
                 "New Endpoint Send Error: {:?}");
         }
 
-        debug!("IN2LO {} bytes from {} via lo port {} to wg port {}",
-            pkt.len(), remote_addr, via_port, dst.port());
+//        debug!("IN2LO {} bytes from {} via lo port {} to wg port {}",
+//            pkt.len(), remote_addr, via_port, dst.port());
 
-        log_err!(await!(inet2stun_tx.send_async((pkt.clone(), dst))));
-        let dat = Bytes::from(pkt);
-        log_err!(await!(via_sock.send_async((dat, dst))));
+        let pkt2 = pkt.clone();
+        let buf = pkt.freeze();
+        log_err!(await!(via_sock.send_async((buf, dst))));
+        log_err!(await!(inet2stun_tx.send_async((pkt2, dst))));
     }
 
     unreachable!("forward_inbound");
@@ -119,4 +121,6 @@ pub async fn set_endpoint(
             }
         }
     }
+
+    unreachable!("set_endpoint");
 }

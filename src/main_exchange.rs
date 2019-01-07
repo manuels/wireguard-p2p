@@ -32,9 +32,11 @@ mod wg;
 mod dht;
 mod utils;
 mod crypto;
-mod args;
-mod dht_encoding;
+mod exchange;
+mod p2p;
 
+use crate::exchange::args;
+use crate::exchange::encoding;
 use crate::dht::Dht;
 use crate::utils::tokio_try_async;
 use crate::args::CmdExchangeArgs;
@@ -124,7 +126,7 @@ pub async fn exchange_keys(dht: Dht, local_secret_key: &box_::SecretKey)
                        pwhash::MEMLIMIT_INTERACTIVE).unwrap();
 
     let local_psk = crate::crypto::rand(32);
-    let dht_put_value = dht_encoding::encode_key_and_psk(&local_shared_key,
+    let dht_put_value = encoding::encode_key_and_psk(&local_shared_key,
         &local_salt, &local_public_key, &local_psk);
 
     let dht2 = dht.clone();
@@ -135,7 +137,7 @@ pub async fn exchange_keys(dht: Dht, local_secret_key: &box_::SecretKey)
     let mut stream = dht.listen(&dht_get_key[..])
         .filter_map(|value|
         {
-            dht_encoding::decode_key_and_psk(&local_secret, &remote_secret, value)
+            encoding::decode_key_and_psk(&local_secret, &remote_secret, value)
         });
 
     println!("Looking for remote peer's public key...");
@@ -175,7 +177,7 @@ pub async fn exchange_keys(dht: Dht, local_secret_key: &box_::SecretKey)
     }
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> io::Result<()> {
     let args = CmdExchangeArgs::parse();
 
     let bootstrap_addrs: Vec<_> = args.bootstrap_addrs.to_socket_addrs()?.collect();
@@ -185,7 +187,7 @@ fn main() -> std::io::Result<()> {
         let dht = await!(dht::Dht::new(&bootstrap_addrs, args.dht_port))?;
 
         let netns = args.netns;
-        let mut all_ifaces = await!(crate::wg::Interface::get_wg_interfaces(netns.clone()))?;
+        let all_ifaces = await!(crate::wg::Interface::get_wg_interfaces(netns.clone()))?;
 
         let wg_iface = if let Some(ifname) = args.ifname {
             all_ifaces.into_iter()
@@ -214,7 +216,7 @@ fn main() -> std::io::Result<()> {
         let secret_key = box_::SecretKey::from_slice(&secret_key[..]).unwrap();
         await!(exchange_keys(dht, &secret_key));
 
-        Ok(()) as std::io::Result<()>
+        Ok(()) as io::Result<()>
     });
 
     Ok(())

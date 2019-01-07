@@ -26,6 +26,7 @@ macro_rules! log_err {
     });
 }
 
+use std::io;
 use std::io::Error;
 use std::net::IpAddr;
 use std::net::Ipv4Addr;
@@ -39,13 +40,14 @@ use sodiumoxide::crypto::box_::SecretKey;
 
 mod wg;
 mod dht;
-mod args;
-mod stun;
 mod utils;
 mod crypto;
-mod traffic;
-mod dht_encoding;
+mod p2p;
 
+use crate::p2p::args;
+use crate::p2p::stun;
+use crate::p2p::traffic;
+use crate::p2p::encoding;
 use crate::utils::CloneSink;
 use crate::utils::CloneStream;
 use crate::utils::tokio_try_async;
@@ -66,6 +68,64 @@ fn inject<T>(mut stream: impl Stream<Item=T, Error=impl std::fmt::Debug + Send> 
     });
 
     (tx, rx)
+}
+
+async fn select_interfaces(args: crate::args::CmdArgs)
+    -> io::Result<Vec<(netlink_wg::routes::Interface, crate::args::InterfaceArgs)>>
+{
+    let mut all_ifaces = await!(crate::wg::Interface::get_wg_interfaces(args.default_netns.clone()))?;
+
+    let ifaces:Vec<_> = if let Some(ifargs) = args.interfaces {
+        let ifaces: Vec<_> = ifargs.iter().map(|iface| {
+            let (j, _) = all_ifaces.iter().enumerate().filter(|(_k, i)| i.ifname == iface.ifname)
+                .next().unwrap_or_else(|| panic!("network interface {} unknown", iface.ifname));
+            all_ifaces.remove(j)
+        }).collect();
+        ifaces.into_iter().zip(ifargs.into_iter()).collect()
+    } else {
+        let ifargs: Vec<_> = all_ifaces.iter().map(|iface| {
+            crate::args::InterfaceArgs {
+                ifname: iface.ifname.clone(),
+                netns: args.default_netns.clone(),
+                peers: None,
+            }
+        }).collect();
+        all_ifaces.into_iter().zip(ifargs.into_iter()).collect()
+    };
+
+    Ok(ifaces)
+}
+
+async fn select_peers(ifaces: Vec<(netlink_wg::routes::Interface, crate::args::InterfaceArgs)>)
+    -> io::Result<Vec<(netlink_wg::wg::IfConfig, Vec<(wg::Interface, sodiumoxide::crypto::box_::PublicKey)>)>>
+{
+    let family = await!(crate::wg::Interface::get_family("wireguard"))?;
+    let family = family.unwrap_or_else(|| panic!("Wireguard kernel module not loaded"));
+
+    let mut pairs: Vec<(_, Vec<_>)> = vec![];
+    for (iface, args) in ifaces {
+        // this has to run first in the tokio loop, because it switches the
+        // network namespace back and forth
+        let mut wg_iface = crate::wg::Interface::new(family, args.netns.clone(), iface.ifindex)?;
+        let wg_cfg = await!(wg_iface.get_config())?;
+
+        let peer_list = if let Some(ref peer_list) = args.peers {
+            peer_list.iter().map(|s| {
+                let p = PublicKey::from_slice(&s).unwrap();
+                let wg_iface = crate::wg::Interface::new(family, args.netns.clone(), iface.ifindex).unwrap();
+                (wg_iface, p)
+            }).collect()
+        } else {
+            wg_cfg.peers().map(|s| {
+                let p = PublicKey::from_slice(s.public_key()).unwrap();
+                let wg_iface = crate::wg::Interface::new(family, args.netns.clone(), iface.ifindex).unwrap();
+                (wg_iface, p)
+            }).collect()
+        };
+
+        pairs.push((wg_cfg, peer_list));
+    };
+    Ok(pairs)
 }
 
 fn main() -> Result<(), Error> {
@@ -90,52 +150,12 @@ fn main() -> Result<(), Error> {
     tokio_try_async(async move {
         let dht = await!(dht::Dht::new(&bootstrap_addrs, dht_port))?;
 
-        let family = await!(crate::wg::Interface::get_family("wireguard"))?;
-        let family = family.unwrap_or_else(|| panic!("Wireguard kernel module not loaded"));
+        let ifaces = await!(select_interfaces(args))?;
+        let pairs = await!(select_peers(ifaces))?;
 
-        let mut all_ifaces = await!(crate::wg::Interface::get_wg_interfaces(args.default_netns.clone()))?;
-
-        let ifaces: Vec<_> = if let Some(ifargs) = args.interfaces {
-            let ifaces: Vec<_> = ifargs.iter().map(|iface| {
-                let (j, _) = all_ifaces.iter().enumerate().filter(|(_k, i)| i.ifname == iface.ifname)
-                    .next().unwrap_or_else(|| panic!("network interface {} unknown", iface.ifname));
-                all_ifaces.remove(j)
-            }).collect();
-            ifaces.into_iter().zip(ifargs.into_iter()).collect()
-        } else {
-            let ifargs: Vec<_> = all_ifaces.iter().map(|iface| {
-                crate::args::InterfaceArgs {
-                    ifname: iface.ifname.clone(),
-                    netns: args.default_netns.clone(),
-                    peers: None,
-                }
-            }).collect();
-            all_ifaces.into_iter().zip(ifargs.into_iter()).collect()
-        };
-
-        let mut pairs: Vec<(_, Vec<_>)> = vec![];
-        for (iface, args) in ifaces {
-            // this has to run first in the tokio loop, because it switches the
-            // network namespace back and forth
-            let mut wg_iface = crate::wg::Interface::new(family, args.netns.clone(), iface.ifindex)?;
-            let wg_cfg = await!(wg_iface.get_config())?;
-
-            let peer_list = if let Some(ref peer_list) = args.peers {
-                peer_list.iter().map(|s| {
-                    let p = PublicKey::from_slice(&s).unwrap();
-                    let wg_iface = crate::wg::Interface::new(family, args.netns.clone(), iface.ifindex).unwrap();
-                    (wg_iface, p)
-                }).collect()
-            } else {
-                wg_cfg.peers().map(|s| {
-                    let p = PublicKey::from_slice(s.public_key()).unwrap();
-                    let wg_iface = crate::wg::Interface::new(family, args.netns.clone(), iface.ifindex).unwrap();
-                    (wg_iface, p)
-                }).collect()
-            };
-
-            pairs.push((wg_cfg, peer_list));
-        };
+        if pairs.is_empty() {
+            warn!("No WireGuard interface found.");
+        }
 
         for (wg_cfg, peer_list) in pairs.into_iter() {
             let sock = tokio::net::UdpSocket::bind(&addr)?;
@@ -159,6 +179,10 @@ fn main() -> Result<(), Error> {
             tokio::spawn_async(traffic::forward_inbound(new_endpoints_tx, udp_rx, inet2stun_tx, udp_tx, wg_port));
             tokio::spawn_async(stun::run(inet2stun_rx, stun2inet_tx, bind_addr, stun_server.clone(), public_addr_tx));
 
+            if peer_list.is_empty() {
+                warn!("Interface has no peers.");
+            }
+
             for (wg_iface, remote_public_key) in peer_list.into_iter() {
                 info!("Managing peer {} on interface #{}.", base64::encode(&remote_public_key[..]), wg_iface.ifindex);
 
@@ -171,8 +195,8 @@ fn main() -> Result<(), Error> {
                 new_endpoints_rx = rx;
                 
                 let shared_key = box_::precompute(&remote_public_key, &secret_key);
-                let dht_put_key = dht_encoding::encode_public_keys(&local_public_key, &remote_public_key);
-                let dht_get_key = dht_encoding::encode_public_keys(&remote_public_key, &local_public_key);
+                let dht_put_key = encoding::encode_public_keys(&local_public_key, &remote_public_key);
+                let dht_get_key = encoding::encode_public_keys(&remote_public_key, &local_public_key);
 
                 tokio::spawn_async(traffic::set_endpoint(wg_iface, remote_public_key, new_endpoints_rrx, dht_address_rx));
 
