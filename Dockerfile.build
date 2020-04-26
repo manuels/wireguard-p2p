@@ -1,0 +1,8 @@
+FROM rust:1.43
+
+WORKDIR .
+COPY . .
+
+RUN cargo install --path .
+
+#CMD ["myapp"]
