@@ -117,6 +117,7 @@ impl UdpSocketSplit for UdpSocket {
         let inet_rx = inet_sock1.into_stream();
         let (tx1, inet_rx1) = mpsc::unbounded();
         let (tx2, inet_rx2) = mpsc::unbounded();
+
         let tx = tx1.fanout(tx2).map_err_as_io();
         task::spawn(inet_rx.forward(tx));
 

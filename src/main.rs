@@ -19,6 +19,7 @@ use async_std::net::ToSocketAddrs;
 use async_std::prelude::FutureExt;
 use futures::future;
 use futures::stream::StreamExt;
+use futures::stream::TryStreamExt;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
 
@@ -79,7 +80,9 @@ async fn create_new_lo_socket(inet_tx: mpsc::UnboundedSender<(Bytes, SocketAddr)
     let lo_sock2 = lo_sock.clone();
 
     let inet_tx = inet_tx.map_err_as_io();
-    let f = lo_sock2.into_stream().forward(inet_tx);
+    let f = lo_sock2.into_stream()
+        .map_ok(move |(buf, _)| (buf, inet_peer.clone()))
+        .forward(inet_tx);
     task::spawn(f);
 
     Ok(lo_sock)
@@ -88,15 +91,15 @@ async fn create_new_lo_socket(inet_tx: mpsc::UnboundedSender<(Bytes, SocketAddr)
 async fn lookup_peers(dht: Arc<OpenDht>,
                       wg: Arc<WgDevice>,
                       new_dht_peer_tx: Sender<(SocketAddr, oneshot::Sender<SocketAddr>)>,
-                      remote_peer_keys: Vec<(PublicKey, DhtHash, PrecomputedKey)>,
+                      remote_peer_keys: Vec<(PublicKey, DhtHash, DhtHash, PrecomputedKey)>,
     ) {
     // TODO: StreamExt::throttle()
 
-    for (pubkey, dht_key, key) in remote_peer_keys {
+    for (pubkey, _publish_dht_key, lookup_key, key) in remote_peer_keys {
         let wg = wg.clone();
         let tx = new_dht_peer_tx.clone();
 
-        let rx = dht.listen(dht_key);
+        let rx = dht.listen(lookup_key);
         let mut rx = rx.filter_map(move |value| future::ready(decrypt(&key, value).ok().and_then(deserialize)));
 
         task::spawn(async move {
@@ -133,7 +136,7 @@ async fn publish_peers(stun_server: SocketAddr,
                        inet_tx: mpsc::UnboundedSender<(Bytes, SocketAddr)>,
                        inet_rx: mpsc::UnboundedReceiver<(Bytes, SocketAddr)>,
                        wg: Arc<WgDevice>,
-                       remote_peer_keys: Vec<(PublicKey, DhtHash, PrecomputedKey)>,
+                       remote_peer_keys: Vec<(PublicKey, DhtHash, DhtHash, PrecomputedKey)>,
                        dht: Arc<OpenDht>) {
     let bind_addr = SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0));
 
@@ -149,18 +152,16 @@ async fn publish_peers(stun_server: SocketAddr,
         dbg!(&connectivity);
 
         let connectivity = connectivity.unwrap();
-        for (_, dht_key, key) in remote_peer_keys.iter() {
+        for (_, publish_dht_key, _lookup_key, key) in remote_peer_keys.iter() {
             let value = serialize(connectivity.into());
             let value = encrypt(&key, value);
 
-            if let Err(e) = dht.put(dht_key.clone(), &value).await {
+            if let Err(e) = dht.put(publish_dht_key.clone(), &value).await {
                 eprintln!("Failed to put our public address to dht: {}", e);
             }
         }
 
         loop {
-            let delta = Duration::from_secs(3);
-
             let wait = wg.next_handshake().unwrap_or(Duration::from_secs(15));
 
             // TODO: drain inet_rx while delaying
@@ -180,7 +181,7 @@ async fn handle_device(stun_server: SocketAddr,
                        dht: Arc<OpenDht>,
                        wg: WgDevice,
                        wg_listen_port: u16,
-                       remote_peer_keys: Vec<(PublicKey, DhtHash, PrecomputedKey)>,
+                       remote_peer_keys: Vec<(PublicKey, DhtHash, DhtHash, PrecomputedKey)>,
         ) -> io::Result<()> {
     let mut map = HashMap::new();
 
@@ -213,14 +214,13 @@ async fn handle_device(stun_server: SocketAddr,
             Either::NewDhtPeer(Some((inet_peer, tx))) => {
                 let create = create_new_lo_socket(inet_tx.clone(), wg_peer, inet_peer);
                 let lo_sock = map.entry(inet_peer).or_try_insert_with_async(create).await?;
-                dbg!("NewDhtPeer", inet_peer, lo_sock.local_addr()?);
 
                 if tx.send(lo_sock.local_addr()?).is_err() {
                     eprintln!("{} Send new lo addr failed: receiver dropped.", Colour::Red.paint("HDL"));
                 }
             }
             Either::InetPacket(Some((buf, inet_peer))) => {
-                //println!("{} received {} bytes from {}", Colour::White.dimmed().paint("HDL"), buf.len(), inet_peer);
+                println!("{} received {} bytes from {}", Colour::White.dimmed().paint("HDL"), buf.len(), inet_peer);
                 let create = create_new_lo_socket(inet_tx.clone(), wg_peer, inet_peer);
                 let res = map.entry(inet_peer).or_try_insert_with_async(create).await;
                 match res {
@@ -258,6 +258,9 @@ async fn bind_inet_socket(seed: &PublicKey) -> io::Result<UdpSocket> {
 
 #[async_std::main]
 async fn main() -> io::Result<()> {
+    sudo::escalate_if_needed().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to become root {}", e)))?;
+
+    env_logger::init();
     sodiumoxide::init().or_else(|_| Err(io::Error::new(io::ErrorKind::Other, "Failed to initialize sodiumoxide")))?;
 
     let matches = App::new("wireguard-p2p")
@@ -280,7 +283,7 @@ async fn main() -> io::Result<()> {
             .value_name("STUN_SERVER")
             .help("STUN3489 server to receive the public IP and port from")
             .takes_value(true)
-            .default_value("bootstrap.ring.cx:4222"))
+            .default_value("stun.wtfismyip.com:3478"))
         .get_matches();
 
     let addrs: Vec<_> = matches.value_of("dht-node").unwrap_or("").to_socket_addrs().await?.collect();
@@ -311,11 +314,14 @@ async fn main() -> io::Result<()> {
 
     let remote_peer_keys = wg.peers().iter().filter_map(|p| {
         let remote_pkey = p.public_key()?;
-        let dht_key = [our_pkey.0, remote_pkey.0].concat();
-        let dht_key = DhtHash::new(dht_key);
+
+        let publish_dht_key = [our_pkey.0, remote_pkey.0].concat();
+        let publish_dht_key  = DhtHash::new(publish_dht_key);
+        let lookup_dht_key = [remote_pkey.0, our_pkey.0].concat();
+        let lookup_dht_key  = DhtHash::new(lookup_dht_key);
 
         let key = crypto::precompute(&remote_pkey, &secret_key);
-        Some((remote_pkey, dht_key, key))
+        Some((remote_pkey, publish_dht_key, lookup_dht_key, key))
     }).collect();
 
     let seed = our_pkey;

@@ -1,6 +1,6 @@
 [package]
 name = "wireguard-p2p"
-version = "0.2.0"
+version = "0.2.1"
 description = "A WireGuard peer-to-peer client"
 license = "LGPL-2.1+"
 authors = ["Manuel Schölling <manuel.schoelling@posteo.de>"]
@@ -18,7 +18,9 @@ bytes = "0.5.4"
 ansi_term = "0.12.1"
 rand = "0.6.1"
 libc = "0.2.69"
+env_logger = "0.7.1"
 clap = "2.33.0"
+sudo = "0.3.1"
 
 [dependencies.async-std]
 version = "1.4.0"
