@@ -1,14 +1,18 @@
 use std::io;
+use std::io::Write;
 use std::time::Duration;
 use std::time::SystemTime;
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, IpAddr};
 use std::net::SocketAddr;
 
+use log::{error, warn, info, debug};
 use clap::App;
 use rand::Rng;
 use rand::SeedableRng;
 use bytes::Bytes;
+use env_logger::Builder;
+use log::LevelFilter;
 
 use async_std::sync;
 use async_std::sync::Sender;
@@ -105,7 +109,7 @@ async fn lookup_peers(dht: Arc<OpenDht>,
         task::spawn(async move {
             let mut max_time = SystemTime::UNIX_EPOCH;
             while let Some((time, peer_addr)) = rx.next().await {
-                println!("DHT found a value: {}", peer_addr);
+                debug!("DHT found a value: {}", peer_addr);
 
                 if time > max_time {
                     max_time = time;
@@ -117,13 +121,13 @@ async fn lookup_peers(dht: Arc<OpenDht>,
                     if let Some(mut wg_peer) = wg.get_peer(&pubkey) {
                         wg_peer.set_endpoint(&lo_addr);
                         if let Err(e) = wg.apply() {
-                            println!("Error while setting endpoint {} to {} ({}): {}",
+                            error!("Error while setting endpoint {} to {} ({}): {}",
                                      pubkey.as_b64(), lo_addr, peer_addr, e);
                         }
 
-                        println!("Set endpoint {} to {} ({})", pubkey.as_b64(), lo_addr, peer_addr);
+                        info!("Set endpoint {} to {} ({})", pubkey.as_b64(), lo_addr, peer_addr);
                     } else {
-                        eprintln!("Endpoint {} vanished.", pubkey.as_b64());
+                        error!("Endpoint {} vanished.", pubkey.as_b64());
                         break
                     }
                 }
@@ -157,7 +161,7 @@ async fn publish_peers(stun_server: SocketAddr,
             let value = encrypt(&key, value);
 
             if let Err(e) = dht.put(publish_dht_key.clone(), &value).await {
-                eprintln!("Failed to put our public address to dht: {}", e);
+                error!("Failed to put our public address to dht: {}", e);
             }
         }
 
@@ -205,7 +209,7 @@ async fn handle_device(stun_server: SocketAddr,
 
         match f1.race(f2).await { // TODO: order?
             Either::NewDhtPeer(None) => {
-                eprintln!("No peer in list?");
+                warn!("No peer in list?");
                 break Ok(());
             }
             Either::InetPacket(None) => {
@@ -216,18 +220,18 @@ async fn handle_device(stun_server: SocketAddr,
                 let lo_sock = map.entry(inet_peer).or_try_insert_with_async(create).await?;
 
                 if tx.send(lo_sock.local_addr()?).is_err() {
-                    eprintln!("{} Send new lo addr failed: receiver dropped.", Colour::Red.paint("HDL"));
+                    error!("{} Send new lo addr failed: receiver dropped.", Colour::Red.paint("HDL"));
                 }
             }
             Either::InetPacket(Some((buf, inet_peer))) => {
-                println!("{} received {} bytes from {}", Colour::White.dimmed().paint("HDL"), buf.len(), inet_peer);
+                //debug!("{} received {} bytes from {}", Colour::White.dimmed().paint("HDL"), buf.len(), inet_peer);
                 let create = create_new_lo_socket(inet_tx.clone(), wg_peer, inet_peer);
                 let res = map.entry(inet_peer).or_try_insert_with_async(create).await;
                 match res {
-                    Err(e) => eprintln!("{} Failed to open lo socket for {}: {}. Dropping {} bytes.", Colour::Red.paint("HDL"), wg_peer, e, buf.len()),
+                    Err(e) => error!("{} Failed to open lo socket for {}: {}. Dropping {} bytes.", Colour::Red.paint("HDL"), wg_peer, e, buf.len()),
                     Ok(lo_sock) => {
                         let _sent = lo_sock.send_to(&buf, &wg_peer).await?;
-                        //println!("Sent {} out of {} bytes to {}", sent, buf.len(), wg_peer);
+                        //debug!("Sent {} out of {} bytes to {}", sent, buf.len(), wg_peer);
                     }
                 }
             }
@@ -251,7 +255,7 @@ async fn bind_inet_socket(seed: &PublicKey) -> io::Result<UdpSocket> {
         break sock?
     };
 
-    println!("Listening on {}", inet_sock.local_addr()?);
+    info!("Listening on {}", inet_sock.local_addr()?);
 
     Ok(inet_sock)
 }
@@ -259,9 +263,6 @@ async fn bind_inet_socket(seed: &PublicKey) -> io::Result<UdpSocket> {
 #[async_std::main]
 async fn main() -> io::Result<()> {
     sudo::escalate_if_needed().map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Failed to become root {}", e)))?;
-
-    env_logger::init();
-    sodiumoxide::init().or_else(|_| Err(io::Error::new(io::ErrorKind::Other, "Failed to initialize sodiumoxide")))?;
 
     let matches = App::new("wireguard-p2p")
         .version("0.2")
@@ -284,7 +285,28 @@ async fn main() -> io::Result<()> {
             .help("STUN3489 server to receive the public IP and port from")
             .takes_value(true)
             .default_value("stun.wtfismyip.com:3478"))
+        .arg(clap::Arg::with_name("v")
+            .short("v")
+            .multiple(true)
+            .help("Sets the level of verbosity"))
         .get_matches();
+
+    Builder::new()
+        .format(|buf, record| {
+            writeln!(buf,
+                     "[{}] {}",
+                     record.level(),
+                     record.args()
+            )
+        })
+        .filter(None, if matches.occurrences_of("v") == 0 {
+            LevelFilter::Info
+        } else {
+            LevelFilter::Debug
+        })
+        .init();
+
+    sodiumoxide::init().or_else(|_| Err(io::Error::new(io::ErrorKind::Other, "Failed to initialize sodiumoxide")))?;
 
     let addrs: Vec<_> = matches.value_of("dht-node").unwrap_or("").to_socket_addrs().await?.collect();
     let dht = OpenDht::new(4222).expect("Failed to initialize OpenDht");
