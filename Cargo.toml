@@ -1,7 +1,9 @@
 [package]
 name = "wireguard-p2p"
-version = "0.1.0"
-authors = ["Manuel Schölling <manuel.schoelling@gmx.de>"]
+version = "0.3.0"
+description = "A WireGuard peer-to-peer client"
+license = "LGPL-2.1+"
+authors = ["Manuel Schölling <manuel.schoelling@posteo.de>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
